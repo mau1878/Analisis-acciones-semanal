@@ -119,13 +119,18 @@ if data:
     
     if ratio_data is not None:
         # Calculate weekly price variations
-        # Calculate weekly price variations
-        ratio_data = ratio_data.to_frame(name='Adjusted Close')
+       # Ensure the index is in datetime format
         ratio_data.index = pd.to_datetime(ratio_data.index)
-        ratio_data['Week'] = ratio_data.index.to_period('W').apply(lambda r: r.start_time)  # Start of the week
+        
+        # Calculate weekly price variations
+        ratio_data['Week_Start'] = ratio_data.index.to_period('W').start_time
         ratio_data['Year'] = ratio_data.index.year
         ratio_data['Week_Number'] = ratio_data.index.isocalendar().week
+        
+        # Resample weekly data
         weekly_data = ratio_data.resample('W').ffill()
+        
+        # Calculate percentage change week-over-week
         weekly_data['Cambio Semanal (%)'] = weekly_data['Adjusted Close'].pct_change() * 100
         
         # Plot weekly price variations
