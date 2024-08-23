@@ -94,30 +94,44 @@ def calculate_streaks(weekly_data):
 
 # Function to calculate yearly positive vs. negative rankings
 def calculate_yearly_ranking(weekly_data):
-    # Resample the data yearly and count positive and negative changes
-    yearly_summary = weekly_data.resample('Y').apply(lambda x: pd.Series({
-        'Positives': (x > 0).sum(),
-        'Negatives': (x < 0).sum()
-    }))
+    try:
+        # Resample the data yearly and count positive and negative changes
+        yearly_summary = weekly_data.resample('Y').apply(lambda x: pd.Series({
+            'Positives': (x > 0).sum(),
+            'Negatives': (x < 0).sum()
+        }))
 
-    # Handle cases where there might be no negatives or positives
-    yearly_summary['Positives'] = yearly_summary['Positives'].replace({0: np.nan})
-    yearly_summary['Negatives'] = yearly_summary['Negatives'].replace({0: np.nan})
-    
-    # Calculate the ratio, handling possible division by zero
-    yearly_summary['Ratio'] = yearly_summary['Positives'] / yearly_summary['Negatives']
+        # Handle cases where there might be no negatives or positives
+        yearly_summary['Positives'] = yearly_summary['Positives'].replace({0: np.nan})
+        yearly_summary['Negatives'] = yearly_summary['Negatives'].replace({0: np.nan})
+        
+        # Calculate the ratio, handling possible division by zero
+        yearly_summary['Ratio'] = yearly_summary['Positives'] / yearly_summary['Negatives']
 
-    # Fill NaN values for better sorting, assuming a very high ratio when there are only positives and very low when there are only negatives
-    yearly_summary['Ratio'] = yearly_summary['Ratio'].fillna(0)
+        # Fill NaN values for better sorting, assuming a very high ratio when there are only positives and very low when there are only negatives
+        yearly_summary['Ratio'] = yearly_summary['Ratio'].fillna(0)
 
-    # Sort by the 'Ratio' column in descending order
-    yearly_summary = yearly_summary.sort_values(by='Ratio', ascending=False)
+        # Debugging information
+        st.write("Yearly Summary Data before Sorting:")
+        st.dataframe(yearly_summary)
 
-    # Debugging info in case there's an issue
-    st.write("Yearly Summary Data:")
-    st.dataframe(yearly_summary)
-    
+        # Ensure 'Ratio' is present and sortable
+        if 'Ratio' not in yearly_summary.columns:
+            st.error("'Ratio' column is missing in yearly_summary.")
+        else:
+            # Sort by the 'Ratio' column in descending order
+            yearly_summary = yearly_summary.sort_values(by='Ratio', ascending=False)
+
+        # More debugging information after sorting
+        st.write("Yearly Summary Data after Sorting:")
+        st.dataframe(yearly_summary)
+        
+    except Exception as e:
+        st.error(f"An error occurred during the calculation of yearly ranking: {e}")
+        return None
+
     return yearly_summary
+
 
 # Streamlit app
 st.title("Análisis de Variación Semanal de Precios de Acciones, ETFs e Índices - MTaurus - X: https://x.com/MTaurus_ok")
