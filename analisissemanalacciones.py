@@ -94,12 +94,29 @@ def calculate_streaks(weekly_data):
 
 # Function to calculate yearly positive vs. negative rankings
 def calculate_yearly_ranking(weekly_data):
+    # Resample the data yearly and count positive and negative changes
     yearly_summary = weekly_data.resample('Y').apply(lambda x: pd.Series({
         'Positives': (x > 0).sum(),
         'Negatives': (x < 0).sum()
     }))
+
+    # Handle cases where there might be no negatives or positives
+    yearly_summary['Positives'] = yearly_summary['Positives'].replace({0: np.nan})
+    yearly_summary['Negatives'] = yearly_summary['Negatives'].replace({0: np.nan})
+    
+    # Calculate the ratio, handling possible division by zero
     yearly_summary['Ratio'] = yearly_summary['Positives'] / yearly_summary['Negatives']
+
+    # Fill NaN values for better sorting, assuming a very high ratio when there are only positives and very low when there are only negatives
+    yearly_summary['Ratio'] = yearly_summary['Ratio'].fillna(0)
+
+    # Sort by the 'Ratio' column in descending order
     yearly_summary = yearly_summary.sort_values(by='Ratio', ascending=False)
+
+    # Debugging info in case there's an issue
+    st.write("Yearly Summary Data:")
+    st.dataframe(yearly_summary)
+    
     return yearly_summary
 
 # Streamlit app
