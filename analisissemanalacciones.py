@@ -119,12 +119,15 @@ if data:
     
     if ratio_data is not None:
         # Calculate weekly price variations
+        # Calculate weekly price variations
         ratio_data = ratio_data.to_frame(name='Adjusted Close')
         ratio_data.index = pd.to_datetime(ratio_data.index)
-        ratio_data['Week'] = ratio_data.index.to_period('W')
+        ratio_data['Week'] = ratio_data.index.to_period('W').apply(lambda r: r.start_time)  # Start of the week
+        ratio_data['Year'] = ratio_data.index.year
+        ratio_data['Week_Number'] = ratio_data.index.isocalendar().week
         weekly_data = ratio_data.resample('W').ffill()
         weekly_data['Cambio Semanal (%)'] = weekly_data['Adjusted Close'].pct_change() * 100
-
+        
         # Plot weekly price variations
         st.write("### Variaciones Semanales de Precios")
         fig = px.line(weekly_data, x=weekly_data.index, y='Cambio Semanal (%)',
@@ -132,11 +135,11 @@ if data:
                       labels={'Cambio Semanal (%)': 'Cambio Semanal (%)'})
         fig.update_traces(mode='lines+markers')
         st.plotly_chart(fig)
-
+        
         # Histogram with Gaussian and percentiles
         st.write("### Histograma de Variaciones Semanales con Ajuste de Gauss")
         weekly_changes = weekly_data['Cambio Semanal (%)'].dropna()
-
+        
         fig, ax = plt.subplots(figsize=(10, 6))
         sns.histplot(weekly_changes, kde=False, stat="density", color="skyblue", ax=ax, binwidth=1)
         
@@ -155,7 +158,7 @@ if data:
             ax.axvline(perc_value, color=colors[i], linestyle='--', label=f'{percentile}º Percentil')
             ax.text(perc_value, ax.get_ylim()[1]*0.9, f'{perc_value:.2f}', color=colors[i],
                     rotation=90, verticalalignment='center', horizontalalignment='right')
-
+        
         ax.set_title(f"Histograma de Cambios Semanales con Ajuste de Gauss para {main_ticker}" + (f" / {second_ticker}" if second_ticker else "") + (f" / {third_ticker}" if third_ticker else ""))
         ax.set_xlabel("Cambio Semanal (%)")
         ax.set_ylabel("Densidad")
@@ -163,10 +166,10 @@ if data:
         # Add watermark   
         plt.text(0.5, 0.01, "MTaurus - X: MTaurus_ok", fontsize=12, color='grey', ha='center', va='center', alpha=0.5, transform=ax.transAxes)
         st.pyplot(fig)
-
+        
         # Heatmap of weekly variations
         st.write("### Mapa de Calor de Variaciones Semanales")
-        weekly_pivot = weekly_data.pivot_table(values='Cambio Semanal (%)', index=weekly_data.index.year, columns=weekly_data.index.week, aggfunc='mean')
+        weekly_pivot = weekly_data.pivot_table(values='Cambio Semanal (%)', index='Year', columns='Week_Number', aggfunc='mean')
         
         # Define a custom colormap with greens for positive values and reds for negative values
         cmap = get_custom_cmap()
