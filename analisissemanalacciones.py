@@ -95,8 +95,8 @@ def calculate_streaks(weekly_data):
 # Function to calculate yearly positive vs. negative rankings
 def calculate_yearly_ranking(weekly_data):
     try:
-        # Resample the data yearly and count positive and negative changes
-        yearly_summary = weekly_data.resample('Y').apply(lambda x: pd.Series({
+        # Resample data to yearly frequency and count positives and negatives
+        yearly_summary = weekly_data.groupby(weekly_data.index.year).apply(lambda x: pd.Series({
             'Positives': (x > 0).sum(),
             'Negatives': (x < 0).sum()
         }))
@@ -131,6 +131,7 @@ def calculate_yearly_ranking(weekly_data):
         return None
 
     return yearly_summary
+
 
 
 # Streamlit app
