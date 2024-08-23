@@ -188,6 +188,9 @@ if data:
         st.write("### Tabla de Rachas Positivas y Negativas")
         st.dataframe(weekly_data[['Cambio Semanal (%)', 'Positive Streak', 'Negative Streak']])
 
+        # Add the week number to the DataFrame
+        weekly_data['WeekNum'] = weekly_data.index.to_series().dt.isocalendar().week
+        
         # Calculate and display yearly positive vs. negative rankings
         yearly_ranking = calculate_yearly_ranking(weekly_data['Cambio Semanal (%)'])
         st.write("### Ranking Anual de Semanas Positivas vs. Negativas")
