@@ -3,6 +3,6 @@ yfinance
 plotly
 seaborn
 matplotlib
-scipy
+requests
 pandas
 sympy
