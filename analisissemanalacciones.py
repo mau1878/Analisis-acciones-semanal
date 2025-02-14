@@ -1,250 +1,560 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
-from scipy.stats import norm
-from matplotlib.colors import LinearSegmentedColormap
+from datetime import datetime
+import requests
 
-# Define custom colormap
-def get_custom_cmap():
-    colors = ['red', 'white', 'green']
-    return LinearSegmentedColormap.from_list('custom_diverging', colors)
+st.set_page_config(layout="wide")
+st.title("Stock Weekly Variation Heatmap")
 
-# Function to fetch data
-def fetch_data(tickers, start_date, end_date):
-    data = {}
-    for ticker in tickers:
-        ticker = ticker.upper()
-        st.write(f"Intentando descargar datos para el ticker {ticker}...")
-        try:
-            df = yf.download(ticker, start=start_date, end=end_date)
-            if df.empty:
-                st.warning(f"No hay datos disponibles para el ticker {ticker} en el rango de fechas seleccionado.")
-            else:
-                data[ticker] = df
-        except Exception as e:
-            st.error(f"Error al descargar datos para el ticker {ticker}: {e}")
-    return data
-
-# Function to align dates and fill missing values
-def align_dates(data):
-    if not data:
-        return {}
-    
-    first_ticker_dates = data[list(data.keys())[0]].index
-    
-    for ticker in data:
-        data[ticker] = data[ticker].reindex(first_ticker_dates)
-        data[ticker] = data[ticker].ffill()  # Forward fill missing values
-    
-    return data
-
-# Function to evaluate the ratio
-def evaluate_ratio(main_ticker, second_ticker, third_ticker, data, apply_ypfd_ratio=False):
-    if not main_ticker:
-        st.error("El ticker principal no puede estar vacío.")
-        return None
-    
-    main_ticker = main_ticker.upper()
-
-    # Apply YPFD.BA/YPF ratio if the option is activated
-    if apply_ypfd_ratio:
-        st.write(f"Aplicando la razón YPFD.BA/YPF al ticker {main_ticker}...")
-        if 'YPFD.BA' in data and 'YPF' in data:
-            result = data[main_ticker]['Adj Close'] / (data['YPFD.BA']['Adj Close'] / data['YPF']['Adj Close'])
-        else:
-            st.error("No hay datos disponibles para YPFD.BA o YPF.")
-            return None
-    else:
-        result = data[main_ticker]['Adj Close']
-
-    # Process the additional ratio with optional divisors
-    if second_ticker and third_ticker:
-        second_ticker = second_ticker.upper()
-        third_ticker = third_ticker.upper()
-
-        if second_ticker in data:
-            if third_ticker in data:
-                result /= (data[second_ticker]['Adj Close'] / data[third_ticker]['Adj Close'])
-            else:
-                st.error(f"El tercer divisor no está disponible en los datos: {third_ticker}")
-                return None
-        else:
-            st.error(f"El segundo divisor no está disponible en los datos: {second_ticker}")
-            return None
-    elif second_ticker:
-        second_ticker = second_ticker.upper()
-
-        if second_ticker in data:
-            result /= data[second_ticker]['Adj Close']
-        else:
-            st.error(f"El segundo divisor no está disponible en los datos: {second_ticker}")
-            return None
-
-    return result
-
-# Function to calculate positive and negative streaks
-def calculate_streaks(weekly_data):
-    weekly_data['Positive Streak'] = weekly_data['Cambio Semanal (%)'].apply(lambda x: 1 if x > 0 else 0).groupby((weekly_data['Cambio Semanal (%)'] <= 0).cumsum()).cumsum()
-    weekly_data['Negative Streak'] = weekly_data['Cambio Semanal (%)'].apply(lambda x: 1 if x < 0 else 0).groupby((weekly_data['Cambio Semanal (%)'] >= 0).cumsum()).cumsum()
-    return weekly_data
-
-# Function to calculate yearly positive vs. negative rankings
-def calculate_yearly_ranking(weekly_data):
+# Data source functions
+def descargar_datos_yfinance(ticker, start, end):
     try:
-        # Resample data to yearly frequency and count positives and negatives
-        yearly_summary = weekly_data.groupby(weekly_data.index.year).apply(lambda x: pd.Series({
-            'Positives': (x > 0).sum(),
-            'Negatives': (x < 0).sum()
-        }))
-
-        # Handle cases where there might be no negatives or positives
-        yearly_summary['Positives'] = yearly_summary['Positives'].replace({0: np.nan})
-        yearly_summary['Negatives'] = yearly_summary['Negatives'].replace({0: np.nan})
-        
-        # Calculate the ratio, handling possible division by zero
-        yearly_summary['Ratio'] = yearly_summary['Positives'] / yearly_summary['Negatives']
-
-        # Fill NaN values for better sorting, assuming a very high ratio when there are only positives and very low when there are only negatives
-        yearly_summary['Ratio'] = yearly_summary['Ratio'].fillna(0)
-
-        # Debugging information
-        st.write("Yearly Summary Data before Sorting:")
-        st.dataframe(yearly_summary)
-
-        # Ensure 'Ratio' is present and sortable
-        if 'Ratio' not in yearly_summary.columns:
-            st.error("'Ratio' column is missing in yearly_summary.")
-        else:
-            # Sort by the 'Ratio' column in descending order
-            yearly_summary = yearly_summary.sort_values(by='Ratio', ascending=False)
-
-        # More debugging information after sorting
-        st.write("Yearly Summary Data after Sorting:")
-        st.dataframe(yearly_summary)
-        
+        stock_data = yf.download(ticker, start=start, end=end)
+        return stock_data
     except Exception as e:
-        st.error(f"An error occurred during the calculation of yearly ranking: {e}")
-        return None
+        st.error(f"Error downloading data from yfinance for {ticker}: {e}")
+        return pd.DataFrame()
 
-    return yearly_summary
+def descargar_datos_analisistecnico(ticker, start_date, end_date):
+    try:
+        # Ensure dates are in datetime.date format
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        elif isinstance(start_date, datetime):
+            start_date = start_date.date()
+
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        elif isinstance(end_date, datetime):
+            end_date = end_date.date()
+
+        # Rest of the function remains the same...
+
+        from_timestamp = int(datetime.combine(start_date, datetime.min.time()).timestamp())
+        to_timestamp = int(datetime.combine(end_date, datetime.max.time()).timestamp())
+
+        cookies = {
+            'ChyrpSession': '0e2b2109d60de6da45154b542afb5768',
+            'i18next': 'es',
+            'PHPSESSID': '5b8da4e0d96ab5149f4973232931f033',
+        }
+
+        headers = {
+            'accept': '*/*',
+            'content-type': 'text/plain',
+            'dnt': '1',
+            'referer': 'https://analisistecnico.com.ar/',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        }
+
+        symbol = ticker.replace('.BA', '')
+
+        params = {
+            'symbol': symbol,
+            'resolution': 'D',
+            'from': str(from_timestamp),
+            'to': str(to_timestamp),
+        }
+
+        response = requests.get(
+            'https://analisistecnico.com.ar/services/datafeed/history',
+            params=params,
+            cookies=cookies,
+            headers=headers,
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if not all(key in data for key in ['t', 'c', 'o', 'h', 'l', 'v']):
+                st.error(f"Incomplete data received for {ticker}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame({
+                'Date': pd.to_datetime(data['t'], unit='s'),
+                'Close': data['c'],
+                'Open': data['o'],
+                'High': data['h'],
+                'Low': data['l'],
+                'Volume': data['v']
+            })
+            df = df.sort_values('Date').drop_duplicates(subset=['Date'])
+            df.set_index('Date', inplace=True)
+            return df[['Close']]  # Return only Close column for consistency
+        else:
+            st.error(f"Error fetching data for {ticker}: Status code {response.status_code}")
+            return pd.DataFrame()
+
+    except Exception as e:
+        st.error(f"Error downloading data from analisistecnico for {ticker}: {e}")
+        return pd.DataFrame()
+
+def descargar_datos_iol(ticker, start_date, end_date):
+    try:
+        # Ensure dates are in datetime.date format
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        elif isinstance(start_date, datetime):
+            start_date = start_date.date()
+
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        elif isinstance(end_date, datetime):
+            end_date = end_date.date()
+
+        from_timestamp = int(datetime.combine(start_date, datetime.min.time()).timestamp())
+        to_timestamp = int(datetime.combine(end_date, datetime.max.time()).timestamp())
+
+        cookies = {
+            'intencionApertura': '0',
+            '__RequestVerificationToken': 'DTGdEz0miQYq1kY8y4XItWgHI9HrWQwXms6xnwndhugh0_zJxYQvnLiJxNk4b14NmVEmYGhdfSCCh8wuR0ZhVQ-oJzo1',
+            'isLogged': '1',
+            'uid': '1107644',
+        }
+
+        headers = {
+            'accept': '*/*',
+            'content-type': 'text/plain',
+            'referer': 'https://iol.invertironline.com',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        }
+
+        symbol = ticker.replace('.BA', '')
+
+        params = {
+            'symbolName': symbol,
+            'exchange': 'BCBA',
+            'from': str(from_timestamp),
+            'to': str(to_timestamp),
+            'resolution': 'D',
+        }
+
+        response = requests.get(
+            'https://iol.invertironline.com/api/cotizaciones/history',
+            params=params,
+            cookies=cookies,
+            headers=headers,
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('status') != 'ok' or 'bars' not in data:
+                st.error(f"Error in API response for {ticker}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(data['bars'])
+            df['Date'] = pd.to_datetime(df['time'], unit='s')
+            df['Close'] = df['close']
+            df = df[['Date', 'Close']]
+            df.set_index('Date', inplace=True)
+            df = df.sort_index().drop_duplicates()
+            return df
+        else:
+            st.error(f"Error fetching data for {ticker}: Status code {response.status_code}")
+            return pd.DataFrame()
+
+    except Exception as e:
+        st.error(f"Error downloading data from IOL for {ticker}: {e}")
+        return pd.DataFrame()
+
+def descargar_datos_byma(ticker, start_date, end_date):
+    try:
+        # Ensure dates are in datetime.date format
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        elif isinstance(start_date, datetime):
+            start_date = start_date.date()
+
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        elif isinstance(end_date, datetime):
+            end_date = end_date.date()
+
+        from_timestamp = int(datetime.combine(start_date, datetime.min.time()).timestamp())
+        to_timestamp = int(datetime.combine(end_date, datetime.max.time()).timestamp())
+
+        cookies = {
+            'JSESSIONID': '5080400C87813D22F6CAF0D3F2D70338',
+            '_fbp': 'fb.2.1728347943669.954945632708052302',
+        }
+
+        headers = {
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'de-DE,de;q=0.9,es-AR;q=0.8,es;q=0.7,en-DE;q=0.6,en;q=0.5,en-US;q=0.4',
+            'Connection': 'keep-alive',
+            'DNT': '1',
+            'Referer': 'https://open.bymadata.com.ar/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        }
+
+        # Remove .BA and add 24HS for BYMA format
+        symbol = ticker.replace('.BA', '')
+        if not symbol.endswith(' 24HS'):
+            symbol = f"{symbol} 24HS"
+
+        params = {
+            'symbol': symbol,
+            'resolution': 'D',
+            'from': str(from_timestamp),
+            'to': str(to_timestamp),
+        }
+
+        response = requests.get(
+            'https://open.bymadata.com.ar/vanoms-be-core/rest/api/bymadata/free/chart/historical-series/history',
+            params=params,
+            cookies=cookies,
+            headers=headers,
+            verify=False
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if not all(key in data for key in ['t', 'c']):
+                st.error(f"Incomplete data received for {ticker}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame({
+                'Date': pd.to_datetime(data['t'], unit='s'),
+                'Close': data['c']
+            })
+            df = df.sort_values('Date').drop_duplicates(subset=['Date'])
+            df.set_index('Date', inplace=True)
+            return df
+        else:
+            st.error(f"Error fetching data for {ticker}: Status code {response.status_code}")
+            return pd.DataFrame()
+
+    except Exception as e:
+        st.error(f"Error downloading data from ByMA Data for {ticker}: {e}")
+        return pd.DataFrame()
+
+@st.cache_data(ttl=86400)
+def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
+    try:
+        if source == 'YFinance':
+            return descargar_datos_yfinance(ticker, start_date, end_date)
+        elif source == 'AnálisisTécnico.com.ar':
+            return descargar_datos_analisistecnico(ticker, start_date, end_date)
+        elif source == 'IOL (Invertir Online)':
+            return descargar_datos_iol(ticker, start_date, end_date)
+        elif source == 'ByMA Data':
+            return descargar_datos_byma(ticker, start_date, end_date)
+        else:
+            st.error(f"Unknown data source: {source}")
+            return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error downloading data for {ticker} from {source}: {e}")
+        return pd.DataFrame()
+def calculate_weekly_variation(data):
+    # Check if data is empty
+    if data.empty:
+        raise ValueError("No data available for the specified ticker and time range")
+
+    # Ensure we have the Close column
+    if 'Close' not in data.columns and not isinstance(data.columns, pd.MultiIndex):
+        raise ValueError("Data does not contain required 'Close' column")
+
+    # Extract just the 'Close' prices
+    if isinstance(data.columns, pd.MultiIndex):
+        close_prices = data['Close'].iloc[:, 0]  # Take first column of 'Close' level
+    else:
+        close_prices = data['Close']
+
+    # Rest of the function remains the same...
+
+    # Resample to weekly data and calculate variations
+    weekly_data = close_prices.resample('W').last()  # Resample to the last day of each week
+
+    # Get the last closing price of the previous year
+    try:
+        previous_year_last_day = close_prices.loc[:weekly_data.index[0] - pd.offsets.Week(1)].iloc[-1]
+    except IndexError:
+        # If no previous year's data is available, set the first week's change to 0%
+        previous_year_last_day = None
+
+    # Calculate percentage change
+    weekly_variation = weekly_data.pct_change()
+
+    # Set the first week's percentage change based on the previous year's last day
+    if previous_year_last_day is not None:
+        weekly_variation.iloc[0] = (weekly_data.iloc[0] - previous_year_last_day) / previous_year_last_day
+    else:
+        weekly_variation.iloc[0] = 0  # Default to 0% if no previous year's data is available
+
+    return weekly_variation
+
+def prepare_comparison_data(tickers, year, source):
+    # Initialize an empty DataFrame to store weekly variations for all tickers
+    comparison_data = pd.DataFrame()
+
+    for ticker in tickers:
+        # Fetch data for the entire year and the last week of the previous year
+        start_date = f"{year - 1}-12-25"  # Start from the last week of the previous year
+        end_date = f"{year}-12-31"
+        stock_data = fetch_stock_data(ticker, start_date, end_date, source)
+
+        # Calculate weekly variation
+        weekly_variation = calculate_weekly_variation(stock_data)
+
+        # Filter for the selected year and add to the comparison DataFrame
+        comparison_data[ticker] = weekly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
+
+    # Ensure the index is consistent (weeks)
+    comparison_data.index = comparison_data.index.strftime('Semana %U')  # Convert to week numbers
+
+    return comparison_data
+
+def plot_comparison_heatmap(data, title):
+    # Clear any existing plots
+    plt.clf()
+
+    # Create figure with higher DPI and specific size
+    fig = plt.figure(figsize=(10, 20), dpi=300)  # Adjusted size for vertical layout
+    ax = plt.gca()
+
+    # Create custom colormap (red to white to green)
+    custom_cmap = sns.diverging_palette(h_neg=10, h_pos=130, s=99, l=55, sep=3, as_cmap=True)
+
+    # Find the maximum absolute value for symmetric color scaling
+    max_abs_val = max(abs(data.min().min()), abs(data.max().max()))
+
+    # Create the heatmap
+    sns.heatmap(data,
+                cmap=custom_cmap,
+                center=0,
+                vmin=-max_abs_val,
+                vmax=max_abs_val,
+                annot=True,
+                fmt='.1%',
+                annot_kws={'size': 8, 'weight': 'bold', 'family': 'Arial'},
+                cbar_kws={'label': 'Weekly Variation', 'shrink': 0.8},
+                square=False,
+                ax=ax)
+
+    # Customize the plot
+    plt.title(title, pad=20, fontsize=16, weight='bold', family='Arial')
+    ax.set_xlabel('Ticker', fontsize=12, family='Arial', weight='bold')
+    ax.set_ylabel('Week Number', fontsize=12, family='Arial', weight='bold')
+
+    # Create a secondary x-axis at the top
+    ax2 = ax.twiny()
+    ax2.set_xlim(ax.get_xlim())
+
+    # Get the tick positions and labels from the bottom axis
+    ax2.set_xticks(ax.get_xticks())
+    ax2.set_xticklabels(data.columns, rotation=45, ha='left')
+
+    # Rotate bottom labels
+    ax.set_xticklabels(data.columns, rotation=45, ha='right')
+
+    # Customize tick labels size
+    ax.tick_params(axis='both', which='major', labelsize=10)
+    ax2.tick_params(axis='x', which='major', labelsize=10)
+
+    # Add quarter labels on the right side
+    ax3 = ax.twinx()
+    ax3.set_ylim(ax.get_ylim())
+    quarter_positions = [6.5, 19.5, 32.5, 45.5]
+    ax3.set_yticks(quarter_positions)
+    ax3.set_yticklabels(['Q1', 'Q2', 'Q3', 'Q4'],
+                        fontsize=12,
+                        weight='bold',
+                        family='Arial')
+    ax3.tick_params(length=0)
+
+    # Add thick horizontal lines to separate quarters
+    quarter_boundaries = [13, 26, 39]
+    for boundary in quarter_boundaries:
+        ax.hlines(y=boundary, xmin=0, xmax=data.shape[1],
+                  colors='black', linestyles='solid', linewidth=2)
+
+    # Add watermark
+    fig.text(0.5, 0.5, "MTaurus - X: @MTaurus_ok", fontsize=12, color='gray',
+             ha='center', va='center', alpha=0.5, weight='bold', family='Arial')
+
+    # Adjust layout
+    plt.tight_layout()
+
+    return fig
 
 
 
-# Streamlit app
-st.title("Análisis de Variación Semanal de Precios de Acciones, ETFs e Índices - MTaurus - X: https://x.com/MTaurus_ok")
 
-# User option to apply the YPFD.BA/YPF ratio
-apply_ypfd_ratio = st.checkbox("Dividir el ticker principal por dólar CCL de YPF", value=False)
+def calculate_monthly_variation(data):
+    # Extract just the 'Close' prices
+    if isinstance(data.columns, pd.MultiIndex):
+        close_prices = data['Close'].iloc[:, 0]
+    else:
+        close_prices = data['Close']
 
-# User inputs
-main_ticker = st.text_input("Ingrese el ticker principal (por ejemplo GGAL.BA o METR.BA o AAPL o BMA:")
-second_ticker = st.text_input("Ingrese el segundo ticker o ratio divisor (opcional):")
-third_ticker = st.text_input("Ingrese el tercer ticker o ratio divisor (opcional):")
+    # Convert to monthly data and calculate variations
+    monthly_data = close_prices.resample('M').last()
 
-start_date = st.date_input("Seleccione la fecha de inicio:", value=pd.to_datetime('2010-01-01'), min_value=pd.to_datetime('2000-01-01'))
-end_date = st.date_input("Seleccione la fecha de fin:", value=pd.to_datetime('today'))
+    # Check if December data from the previous year exists
+    try:
+        previous_december = close_prices.loc[:monthly_data.index[0] - pd.offsets.MonthBegin(1)].iloc[-1]
+    except IndexError:
+        previous_december = None
 
-# Option to choose between average and median for weekly and yearly graphs
-metric_option = st.radio("Seleccione la métrica para los gráficos semanales y anuales:", ("Promedio", "Mediana"))
+    # Calculate percentage change
+    monthly_variation = monthly_data.pct_change()
 
-# Extract tickers from the inputs
-tickers = {main_ticker, second_ticker, third_ticker}
-tickers = {ticker.upper() for ticker in tickers if ticker}
-if apply_ypfd_ratio:
-    tickers.update({'YPFD.BA', 'YPF'})
+    # Set January's percentage change based on the previous December's value
+    if previous_december is not None:
+        monthly_variation.iloc[0] = (monthly_data.iloc[0] - previous_december) / previous_december
+    else:
+        monthly_variation.iloc[0] = 0
 
-data = fetch_data(tickers, start_date, end_date)
+    return monthly_variation
+def prepare_monthly_comparison_data(tickers, year, source):
+    # Initialize an empty DataFrame to store monthly variations for all tickers
+    comparison_data = pd.DataFrame()
 
-if data:
-    data = align_dates(data)
-    
-    # Evaluate ratio
-    ratio_data = evaluate_ratio(main_ticker, second_ticker, third_ticker, data, apply_ypfd_ratio)
-    
-    if ratio_data is not None:
-        # Calculate weekly price variations
-        ratio_data = ratio_data.to_frame(name='Adjusted Close')
-        ratio_data.index = pd.to_datetime(ratio_data.index)
-        ratio_data['Week'] = ratio_data.index.to_period('W')
-        weekly_data = ratio_data.resample('W').ffill()
-        weekly_data['Cambio Semanal (%)'] = weekly_data['Adjusted Close'].pct_change() * 100
+    for ticker in tickers:
+        # Fetch data for the entire year and the previous December
+        start_date = f"{year - 1}-12-01"
+        end_date = f"{year}-12-31"
+        stock_data = fetch_stock_data(ticker, start_date, end_date, source)
 
-        # Calculate streaks
-        weekly_data = calculate_streaks(weekly_data)
+        # Calculate monthly variation
+        monthly_variation = calculate_monthly_variation(stock_data)
 
-        # Plot weekly price variations
-        st.write("### Variaciones Semanales de Precios")
-        fig = px.line(weekly_data, x=weekly_data.index, y='Cambio Semanal (%)',
-                      title=f"Variaciones Semanales de {main_ticker}" + (f" / {second_ticker}" if second_ticker else "") + (f" / {third_ticker}" if third_ticker else ""),
-                      labels={'Cambio Semanal (%)': 'Cambio Semanal (%)'})
-        fig.update_traces(mode='lines+markers')
-        st.plotly_chart(fig)
+        # Filter for the selected year and add to the comparison DataFrame
+        comparison_data[ticker] = monthly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
 
-        # Display positive and negative streaks table
-        st.write("### Tabla de Rachas Positivas y Negativas")
-        st.dataframe(weekly_data[['Cambio Semanal (%)', 'Positive Streak', 'Negative Streak']])
+    # Ensure the index is consistent (months)
+    comparison_data.index = comparison_data.index.strftime('%b')
 
-        # Ensure the index is in datetime format
-        weekly_data.index = pd.to_datetime(weekly_data.index)
+    return comparison_data
 
-        # Then extract the week number
-        weekly_data['WeekNum'] = weekly_data.index.to_series().dt.isocalendar().week
-        
-        # Calculate and display yearly positive vs. negative rankings
-        yearly_ranking = calculate_yearly_ranking(weekly_data['Cambio Semanal (%)'])
-        st.write("### Ranking Anual de Semanas Positivas vs. Negativas")
-        st.dataframe(yearly_ranking)
+def plot_monthly_comparison_heatmap(data, title):
+    # Clear any existing plots
+    plt.clf()
 
-        # Histogram with Gaussian and percentiles
-        st.write("### Histograma de Variaciones Semanales con Ajuste de Gauss")
-        weekly_changes = weekly_data['Cambio Semanal (%)'].dropna()
+    # Create figure with higher DPI and specific size
+    fig = plt.figure(figsize=(10, 8), dpi=300)
+    ax = plt.gca()
 
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.histplot(weekly_changes, kde=False, stat="density", color="skyblue", ax=ax, binwidth=2)
-        
-        # Fit Gaussian distribution
-        mu, std = norm.fit(weekly_changes)
-        xmin, xmax = ax.get_xlim()
-        x = np.linspace(xmin, xmax, 100)
-        p = norm.pdf(x, mu, std)
-        ax.plot(x, p, 'k', linewidth=2)
-        
-        # Percentiles with different colors and vertical labels
-        percentiles = [5, 25, 50, 75, 95]
-        colors = ['red', 'orange', 'green', 'blue', 'purple']
-        for i, percentile in enumerate(percentiles):
-            perc_value = np.percentile(weekly_changes, percentile)
-            ax.axvline(perc_value, color=colors[i], linestyle='--', label=f'{percentile}º Percentil')
-            ax.text(perc_value, ax.get_ylim()[1]*0.9, f'{perc_value:.2f}', color=colors[i],
-                    rotation=90, verticalalignment='center', horizontalalignment='right')
+    # Create custom colormap (red to white to green)
+    custom_cmap = sns.diverging_palette(h_neg=10, h_pos=130, s=99, l=55, sep=3, as_cmap=True)
 
-        ax.set_title(f"Histograma de Cambios Semanales con Ajuste de Gauss para {main_ticker}" + (f" / {second_ticker}" if second_ticker else "") + (f" / {third_ticker}" if third_ticker else ""))
-        ax.set_xlabel("Cambio Semanal (%)")
-        ax.set_ylabel("Densidad")
-        ax.legend()
+    # Find the maximum absolute value for symmetric color scaling
+    max_abs_val = max(abs(data.min().min()), abs(data.max().max()))
 
-        st.pyplot(fig)
+    # Create the heatmap
+    sns.heatmap(data,
+                cmap=custom_cmap,
+                center=0,
+                vmin=-max_abs_val,
+                vmax=max_abs_val,
+                annot=True,
+                fmt='.1%',
+                annot_kws={'size': 8, 'weight': 'bold', 'family': 'Arial'},
+                cbar_kws={'label': 'Variación Mensual', 'shrink': 0.8},
+                square=False,
+                ax=ax)
 
-        # Heatmap for weekly changes
-        st.write("### Mapa de Calor de Variaciones Semanales")
-        weekly_data['Year'] = weekly_data.index.year
-        weekly_data['WeekNum'] = weekly_data.index.week
-        heatmap_data = weekly_data.pivot('Year', 'WeekNum', 'Cambio Semanal (%)')
-        
-        plt.figure(figsize=(14, 8))
-        sns.heatmap(heatmap_data, cmap=get_custom_cmap(), center=0, annot=True, fmt=".1f", cbar_kws={'label': 'Cambio Semanal (%)'})
-        plt.title(f"Mapa de Calor de Variaciones Semanales para {main_ticker}" + (f" / {second_ticker}" if second_ticker else "") + (f" / {third_ticker}" if third_ticker else ""))
-        plt.xlabel("Semana del Año")
-        plt.ylabel("Año")
-        st.pyplot(plt)
+    # Customize the plot
+    plt.title(title, pad=20, fontsize=16, weight='bold', family='Arial')
+    ax.set_xlabel('Ticker', fontsize=12, family='Arial', weight='bold')
+    ax.set_ylabel('Mes', fontsize=12, family='Arial', weight='bold')
 
-        # Display the streaks and yearly ranking
-        st.write("### Tabla de Rachas Positivas y Negativas por Año")
-        st.dataframe(weekly_data[['Cambio Semanal (%)', 'Positive Streak', 'Negative Streak']])
-        st.write("### Ranking Anual de Semanas Positivas vs. Negativas")
-        yearly_ranking = calculate_yearly_ranking(weekly_data['Cambio Semanal (%)'])
-        st.dataframe(yearly_ranking)
+    # Create a secondary x-axis at the top
+    ax2 = ax.twiny()
+    ax2.set_xlim(ax.get_xlim())
+
+    # Get the tick positions and labels from the bottom axis
+    ax2.set_xticks(ax.get_xticks())
+    ax2.set_xticklabels(data.columns, rotation=45, ha='left')
+
+    # Rotate bottom labels
+    ax.set_xticklabels(data.columns, rotation=45, ha='right')
+
+    # Customize tick labels size
+    ax.tick_params(axis='both', which='major', labelsize=10)
+    ax2.tick_params(axis='x', which='major', labelsize=10)
+
+    # Add watermark
+    fig.text(0.5, 0.5, "MTaurus - X: @MTaurus_ok", fontsize=12, color='gray',
+             ha='center', va='center', alpha=0.5, weight='bold', family='Arial')
+
+    # Adjust layout
+    plt.tight_layout()
+
+    return fig
+
+
+def main():
+    # Add data source selection
+    data_sources = ['YFinance', 'AnálisisTécnico.com.ar', 'IOL (Invertir Online)', 'ByMA Data']
+    selected_source = st.sidebar.selectbox('Seleccionar Fuente de Datos', data_sources)
+
+    # Add mode selection
+    mode = st.radio("Selecciona el modo",
+                    ["Un Ticker, Múltiples Años",
+                     "Múltiples Tickers, Un Año (Cambios Semanales)",
+                     "Múltiples Tickers, Un Año (Cambios Mensuales)"])
+
+    if mode == "Un Ticker, Múltiples Años":
+        with st.sidebar:
+            ticker = st.text_input("Introduce el Ticker de la Acción", value="AAPL")
+            start_date = st.date_input("Fecha de Inicio", value=pd.to_datetime("2017-01-01"))
+            end_date = st.date_input("Fecha de Fin", value=pd.to_datetime("2019-12-31"))
+            confirm_data = st.button("Confirmar Datos")
+
+        if confirm_data:
+            try:
+                with st.spinner('Obteniendo y procesando datos...'):
+                    stock_data = fetch_stock_data(ticker, start_date, end_date, selected_source)
+                    weekly_df = calculate_weekly_variation(stock_data).to_frame(name='Variación')
+                    weekly_df['Año'] = weekly_df.index.year
+                    weekly_df['Semana'] = weekly_df.index.isocalendar().week
+                    heatmap_data = weekly_df.pivot(index='Semana', columns='Año', values='Variación')
+
+                    fig = plot_comparison_heatmap(heatmap_data, f'Heatmap de Variación Semanal para {ticker}')
+                    st.pyplot(fig, dpi=300)
+
+            except Exception as e:
+                st.error(f"Ocurrió un error: {str(e)}")
+                st.info("Por favor, verifica si el símbolo del ticker es válido y si el rango de fechas es apropiado.")
+
+    elif mode == "Múltiples Tickers, Un Año (Cambios Semanales)":
+        with st.sidebar:
+            tickers = st.text_input("Introduce los Tickers de las Acciones (separados por comas)", value="AAPL, MSFT, GOOGL")
+            year = st.number_input("Selecciona el Año", min_value=2000, max_value=2024, value=2020, step=1)
+            confirm_data = st.button("Confirmar Datos")
+
+        if confirm_data:
+            try:
+                with st.spinner('Obteniendo y procesando datos...'):
+                    ticker_list = [ticker.strip().upper() for ticker in tickers.split(",")]
+                    comparison_data = prepare_comparison_data(ticker_list, year, selected_source)
+                    fig = plot_comparison_heatmap(comparison_data, f'Comparación de Variación Semanal para {year}')
+                    st.pyplot(fig, dpi=300)
+
+            except Exception as e:
+                st.error(f"Ocurrió un error: {str(e)}")
+                st.info("Por favor, verifica si los tickers son válidos y si el año es apropiado.")
+
+    elif mode == "Múltiples Tickers, Un Año (Cambios Mensuales)":
+        with st.sidebar:
+            tickers = st.text_input("Introduce los Tickers de las Acciones (separados por comas)", value="AAPL, MSFT, GOOGL")
+            year = st.number_input("Selecciona el Año", min_value=2000, max_value=2024, value=2020, step=1)
+            confirm_data = st.button("Confirmar Datos")
+
+        if confirm_data:
+            try:
+                with st.spinner('Obteniendo y procesando datos...'):
+                    ticker_list = [ticker.strip().upper() for ticker in tickers.split(",")]
+                    monthly_comparison_data = prepare_monthly_comparison_data(ticker_list, year, selected_source)
+                    fig = plot_monthly_comparison_heatmap(monthly_comparison_data, f'Comparación de Variación Mensual para {year}')
+                    st.pyplot(fig, dpi=300)
+
+            except Exception as e:
+                st.error(f"Ocurrió un error: {str(e)}")
+                st.info("Por favor, verifica si los tickers son válidos y si el año es apropiado.")
+
+if __name__ == "__main__":
+    main()
