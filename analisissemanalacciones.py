@@ -5,9 +5,10 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import datetime
 import requests
+import math  # NEW: For sqrt in font size calculation
 
 st.set_page_config(layout="wide")
-st.title("Stock Weekly Variation Heatmap")
+st.title("Stock and Ratio Weekly/Monthly Variation Heatmap")
 
 # Data source functions
 def descargar_datos_yfinance(ticker, start, end):
@@ -20,7 +21,6 @@ def descargar_datos_yfinance(ticker, start, end):
 
 def descargar_datos_analisistecnico(ticker, start_date, end_date):
     try:
-        # Ensure dates are in datetime.date format
         if isinstance(start_date, str):
             start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
         elif isinstance(start_date, datetime):
@@ -30,8 +30,6 @@ def descargar_datos_analisistecnico(ticker, start_date, end_date):
             end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
         elif isinstance(end_date, datetime):
             end_date = end_date.date()
-
-        # Rest of the function remains the same...
 
         from_timestamp = int(datetime.combine(start_date, datetime.min.time()).timestamp())
         to_timestamp = int(datetime.combine(end_date, datetime.max.time()).timestamp())
@@ -82,7 +80,7 @@ def descargar_datos_analisistecnico(ticker, start_date, end_date):
             })
             df = df.sort_values('Date').drop_duplicates(subset=['Date'])
             df.set_index('Date', inplace=True)
-            return df[['Close']]  # Return only Close column for consistency
+            return df[['Close']]
         else:
             st.error(f"Error fetching data for {ticker}: Status code {response.status_code}")
             return pd.DataFrame()
@@ -93,7 +91,6 @@ def descargar_datos_analisistecnico(ticker, start_date, end_date):
 
 def descargar_datos_iol(ticker, start_date, end_date):
     try:
-        # Ensure dates are in datetime.date format
         if isinstance(start_date, str):
             start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
         elif isinstance(start_date, datetime):
@@ -161,7 +158,6 @@ def descargar_datos_iol(ticker, start_date, end_date):
 
 def descargar_datos_byma(ticker, start_date, end_date):
     try:
-        # Ensure dates are in datetime.date format
         if isinstance(start_date, str):
             start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
         elif isinstance(start_date, datetime):
@@ -189,7 +185,6 @@ def descargar_datos_byma(ticker, start_date, end_date):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         }
 
-        # Remove .BA and add 24HS for BYMA format
         symbol = ticker.replace('.BA', '')
         if not symbol.endswith(' 24HS'):
             symbol = f"{symbol} 24HS"
@@ -247,80 +242,95 @@ def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
     except Exception as e:
         st.error(f"Error downloading data for {ticker} from {source}: {e}")
         return pd.DataFrame()
+
+@st.cache_data(ttl=86400)
+def fetch_ratio_data(numerator_ticker, denominator_ticker, start_date, end_date, source='YFinance'):
+    try:
+        num_data = fetch_stock_data(numerator_ticker, start_date, end_date, source)
+        denom_data = fetch_stock_data(denominator_ticker, start_date, end_date, source)
+
+        if num_data.empty or denom_data.empty:
+            st.error(f"Cannot compute ratio {numerator_ticker}/{denominator_ticker}: Data missing for one or both tickers")
+            return pd.DataFrame()
+
+        num_close = num_data['Close'] if 'Close' in num_data.columns else num_data.iloc[:, 0]
+        denom_close = denom_data['Close'] if 'Close' in denom_data.columns else denom_data.iloc[:, 0]
+
+        aligned_data = pd.concat([num_close, denom_close], axis=1, keys=['num', 'denom']).dropna()
+        ratio_data = pd.DataFrame({
+            'Close': aligned_data['num'] / aligned_data['denom']
+        }, index=aligned_data.index)
+
+        return ratio_data
+    except Exception as e:
+        st.error(f"Error computing ratio {numerator_ticker}/{denominator_ticker}: {e}")
+        return pd.DataFrame()
+
 def calculate_weekly_variation(data):
-    # Check if data is empty
     if data.empty:
         raise ValueError("No data available for the specified ticker and time range")
 
-    # Ensure we have the Close column
     if 'Close' not in data.columns and not isinstance(data.columns, pd.MultiIndex):
         raise ValueError("Data does not contain required 'Close' column")
 
-    # Extract just the 'Close' prices
     if isinstance(data.columns, pd.MultiIndex):
-        close_prices = data['Close'].iloc[:, 0]  # Take first column of 'Close' level
+        close_prices = data['Close'].iloc[:, 0]
     else:
         close_prices = data['Close']
 
-    # Rest of the function remains the same...
-
-    # Resample to weekly data and calculate variations
-    weekly_data = close_prices.resample('W').last()  # Resample to the last day of each week
-
-    # Get the last closing price of the previous year
+    weekly_data = close_prices.resample('W').last()
     try:
         previous_year_last_day = close_prices.loc[:weekly_data.index[0] - pd.offsets.Week(1)].iloc[-1]
     except IndexError:
-        # If no previous year's data is available, set the first week's change to 0%
         previous_year_last_day = None
 
-    # Calculate percentage change
     weekly_variation = weekly_data.pct_change()
-
-    # Set the first week's percentage change based on the previous year's last day
     if previous_year_last_day is not None:
         weekly_variation.iloc[0] = (weekly_data.iloc[0] - previous_year_last_day) / previous_year_last_day
     else:
-        weekly_variation.iloc[0] = 0  # Default to 0% if no previous year's data is available
+        weekly_variation.iloc[0] = 0
 
     return weekly_variation
 
-def prepare_comparison_data(tickers, year, source):
-    # Initialize an empty DataFrame to store weekly variations for all tickers
+def prepare_comparison_data(ticker_source_pairs, year):
     comparison_data = pd.DataFrame()
 
-    for ticker in tickers:
-        # Fetch data for the entire year and the last week of the previous year
-        start_date = f"{year - 1}-12-25"  # Start from the last week of the previous year
-        end_date = f"{year}-12-31"
-        stock_data = fetch_stock_data(ticker, start_date, end_date, source)
+    for ticker_input, source in ticker_source_pairs:
+        if '/' in ticker_input:
+            num_ticker, denom_ticker = ticker_input.split('/')
+            num_ticker = num_ticker.strip().upper()
+            denom_ticker = denom_ticker.strip().upper()
+            start_date = f"{year - 1}-12-25"
+            end_date = f"{year}-12-31"
+            stock_data = fetch_ratio_data(num_ticker, denom_ticker, start_date, end_date, source)
+            display_name = f"{num_ticker}/{denom_ticker}"
+        else:
+            ticker = ticker_input.strip().upper()
+            start_date = f"{year - 1}-12-25"
+            end_date = f"{year}-12-31"
+            stock_data = fetch_stock_data(ticker, start_date, end_date, source)
+            display_name = ticker
 
-        # Calculate weekly variation
         weekly_variation = calculate_weekly_variation(stock_data)
+        comparison_data[display_name] = weekly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
 
-        # Filter for the selected year and add to the comparison DataFrame
-        comparison_data[ticker] = weekly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
-
-    # Ensure the index is consistent (weeks)
-    comparison_data.index = comparison_data.index.strftime('Semana %U')  # Convert to week numbers
-
+    comparison_data.index = comparison_data.index.strftime('Semana %U')
     return comparison_data
 
-def plot_comparison_heatmap(data, title):
-    # Clear any existing plots
+def plot_comparison_heatmap(data, title, year):
     plt.clf()
-
-    # Create figure with higher DPI and specific size
-    fig = plt.figure(figsize=(10, 20), dpi=300)  # Adjusted size for vertical layout
+    fig = plt.figure(figsize=(10, 20), dpi=300)
     ax = plt.gca()
-
-    # Create custom colormap (red to white to green)
     custom_cmap = sns.diverging_palette(h_neg=10, h_pos=130, s=99, l=55, sep=3, as_cmap=True)
-
-    # Find the maximum absolute value for symmetric color scaling
     max_abs_val = max(abs(data.min().min()), abs(data.max().max()))
 
-    # Create the heatmap
+    # NEW: Dynamically calculate annotation font size
+    base_size = 8  # Default font size
+    reference_cells = 50 * 5  # Reference: 50 weeks × 5 tickers
+    num_cells = data.shape[0] * data.shape[1]  # Actual number of cells
+    font_size = base_size * math.sqrt(reference_cells / max(num_cells, 1))  # Avoid division by zero
+    font_size = max(6, min(12, font_size))  # Clamp between 6 and 12
+
     sns.heatmap(data,
                 cmap=custom_cmap,
                 center=0,
@@ -328,122 +338,128 @@ def plot_comparison_heatmap(data, title):
                 vmax=max_abs_val,
                 annot=True,
                 fmt='.1%',
-                annot_kws={'size': 8, 'weight': 'bold', 'family': 'Arial'},
+                annot_kws={'size': font_size, 'weight': 'bold', 'family': 'Arial'},
                 cbar_kws={'label': 'Weekly Variation', 'shrink': 0.8},
                 square=False,
                 ax=ax)
 
-    # Customize the plot
     plt.title(title, pad=20, fontsize=16, weight='bold', family='Arial')
-    ax.set_xlabel('Ticker', fontsize=12, family='Arial', weight='bold')
+    ax.set_xlabel('Ticker/Ratio', fontsize=12, family='Arial', weight='bold')
     ax.set_ylabel('Week Number', fontsize=12, family='Arial', weight='bold')
 
-    # Create a secondary x-axis at the top
     ax2 = ax.twiny()
     ax2.set_xlim(ax.get_xlim())
-
-    # Get the tick positions and labels from the bottom axis
     ax2.set_xticks(ax.get_xticks())
     ax2.set_xticklabels(data.columns, rotation=45, ha='left')
-
-    # Rotate bottom labels
     ax.set_xticklabels(data.columns, rotation=45, ha='right')
-
-    # Customize tick labels size
     ax.tick_params(axis='both', which='major', labelsize=10)
     ax2.tick_params(axis='x', which='major', labelsize=10)
 
-    # Add quarter labels on the right side
+    # Dynamically calculate quarter positions and filter based on data availability
+    week_numbers = [int(idx.split()[-1]) for idx in data.index]
+    min_week = min(week_numbers)
+    max_week = max(week_numbers)
+
+    q1_start = datetime(year, 1, 1).isocalendar()[1]
+    q2_start = datetime(year, 4, 1).isocalendar()[1]
+    q3_start = datetime(year, 7, 1).isocalendar()[1]
+    q4_start = datetime(year, 10, 1).isocalendar()[1]
+
+    quarter_starts = {
+        'Q1': q1_start,
+        'Q2': q2_start,
+        'Q3': q3_start,
+        'Q4': q4_start
+    }
+    quarter_positions = []
+    quarter_labels = []
+    for qtr, start_week in quarter_starts.items():
+        if min_week <= start_week <= max_week:
+            position = start_week - min_week
+            quarter_positions.append(position)
+            quarter_labels.append(qtr)
+
     ax3 = ax.twinx()
     ax3.set_ylim(ax.get_ylim())
-    quarter_positions = [6.5, 19.5, 32.5, 45.5]
     ax3.set_yticks(quarter_positions)
-    ax3.set_yticklabels(['Q1', 'Q2', 'Q3', 'Q4'],
-                        fontsize=12,
-                        weight='bold',
-                        family='Arial')
+    ax3.set_yticklabels(quarter_labels, fontsize=12, weight='bold', family='Arial')
     ax3.tick_params(length=0)
 
-    # Add thick horizontal lines to separate quarters
-    quarter_boundaries = [13, 26, 39]
+    quarter_boundaries = [
+        (q2_start - min_week - 1) if min_week <= q2_start - 1 <= max_week else None,
+        (q3_start - min_week - 1) if min_week <= q3_start - 1 <= max_week else None,
+        (q4_start - min_week - 1) if min_week <= q4_start - 1 <= max_week else None
+    ]
     for boundary in quarter_boundaries:
-        ax.hlines(y=boundary, xmin=0, xmax=data.shape[1],
-                  colors='black', linestyles='solid', linewidth=2)
+        if boundary is not None and boundary >= 0:
+            ax.hlines(y=boundary, xmin=0, xmax=data.shape[1],
+                      colors='black', linestyles='solid', linewidth=2)
 
-    # Add watermark
     fig.text(0.5, 0.5, "MTaurus - X: @MTaurus_ok", fontsize=12, color='gray',
              ha='center', va='center', alpha=0.5, weight='bold', family='Arial')
 
-    # Adjust layout
     plt.tight_layout()
-
     return fig
 
-
-
-
 def calculate_monthly_variation(data):
-    # Extract just the 'Close' prices
     if isinstance(data.columns, pd.MultiIndex):
         close_prices = data['Close'].iloc[:, 0]
     else:
         close_prices = data['Close']
 
-    # Convert to monthly data and calculate variations
     monthly_data = close_prices.resample('M').last()
-
-    # Check if December data from the previous year exists
     try:
         previous_december = close_prices.loc[:monthly_data.index[0] - pd.offsets.MonthBegin(1)].iloc[-1]
     except IndexError:
         previous_december = None
 
-    # Calculate percentage change
     monthly_variation = monthly_data.pct_change()
-
-    # Set January's percentage change based on the previous December's value
     if previous_december is not None:
         monthly_variation.iloc[0] = (monthly_data.iloc[0] - previous_december) / previous_december
     else:
         monthly_variation.iloc[0] = 0
 
     return monthly_variation
-def prepare_monthly_comparison_data(tickers, year, source):
-    # Initialize an empty DataFrame to store monthly variations for all tickers
+
+def prepare_monthly_comparison_data(ticker_source_pairs, year):
     comparison_data = pd.DataFrame()
 
-    for ticker in tickers:
-        # Fetch data for the entire year and the previous December
-        start_date = f"{year - 1}-12-01"
-        end_date = f"{year}-12-31"
-        stock_data = fetch_stock_data(ticker, start_date, end_date, source)
+    for ticker_input, source in ticker_source_pairs:
+        if '/' in ticker_input:
+            num_ticker, denom_ticker = ticker_input.split('/')
+            num_ticker = num_ticker.strip().upper()
+            denom_ticker = denom_ticker.strip().upper()
+            start_date = f"{year - 1}-12-01"
+            end_date = f"{year}-12-31"
+            stock_data = fetch_ratio_data(num_ticker, denom_ticker, start_date, end_date, source)
+            display_name = f"{num_ticker}/{denom_ticker}"
+        else:
+            ticker = ticker_input.strip().upper()
+            start_date = f"{year - 1}-12-01"
+            end_date = f"{year}-12-31"
+            stock_data = fetch_stock_data(ticker, start_date, end_date, source)
+            display_name = ticker
 
-        # Calculate monthly variation
         monthly_variation = calculate_monthly_variation(stock_data)
+        comparison_data[display_name] = monthly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
 
-        # Filter for the selected year and add to the comparison DataFrame
-        comparison_data[ticker] = monthly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
-
-    # Ensure the index is consistent (months)
     comparison_data.index = comparison_data.index.strftime('%b')
-
     return comparison_data
 
 def plot_monthly_comparison_heatmap(data, title):
-    # Clear any existing plots
     plt.clf()
-
-    # Create figure with higher DPI and specific size
     fig = plt.figure(figsize=(10, 8), dpi=300)
     ax = plt.gca()
-
-    # Create custom colormap (red to white to green)
     custom_cmap = sns.diverging_palette(h_neg=10, h_pos=130, s=99, l=55, sep=3, as_cmap=True)
-
-    # Find the maximum absolute value for symmetric color scaling
     max_abs_val = max(abs(data.min().min()), abs(data.max().max()))
 
-    # Create the heatmap
+    # NEW: Dynamically calculate annotation font size
+    base_size = 8
+    reference_cells = 12 * 5  # Reference: 12 months × 5 tickers
+    num_cells = data.shape[0] * data.shape[1]
+    font_size = base_size * math.sqrt(reference_cells / max(num_cells, 1))
+    font_size = max(6, min(12, font_size))
+
     sns.heatmap(data,
                 cmap=custom_cmap,
                 center=0,
@@ -451,110 +467,108 @@ def plot_monthly_comparison_heatmap(data, title):
                 vmax=max_abs_val,
                 annot=True,
                 fmt='.1%',
-                annot_kws={'size': 8, 'weight': 'bold', 'family': 'Arial'},
+                annot_kws={'size': font_size, 'weight': 'bold', 'family': 'Arial'},
                 cbar_kws={'label': 'Variación Mensual', 'shrink': 0.8},
                 square=False,
                 ax=ax)
 
-    # Customize the plot
     plt.title(title, pad=20, fontsize=16, weight='bold', family='Arial')
-    ax.set_xlabel('Ticker', fontsize=12, family='Arial', weight='bold')
+    ax.set_xlabel('Ticker/Ratio', fontsize=12, family='Arial', weight='bold')
     ax.set_ylabel('Mes', fontsize=12, family='Arial', weight='bold')
 
-    # Create a secondary x-axis at the top
     ax2 = ax.twiny()
     ax2.set_xlim(ax.get_xlim())
-
-    # Get the tick positions and labels from the bottom axis
     ax2.set_xticks(ax.get_xticks())
     ax2.set_xticklabels(data.columns, rotation=45, ha='left')
-
-    # Rotate bottom labels
     ax.set_xticklabels(data.columns, rotation=45, ha='right')
-
-    # Customize tick labels size
     ax.tick_params(axis='both', which='major', labelsize=10)
     ax2.tick_params(axis='x', which='major', labelsize=10)
 
-    # Add watermark
     fig.text(0.5, 0.5, "MTaurus - X: @MTaurus_ok", fontsize=12, color='gray',
              ha='center', va='center', alpha=0.5, weight='bold', family='Arial')
 
-    # Adjust layout
     plt.tight_layout()
-
     return fig
 
-
 def main():
-    # Add data source selection
     data_sources = ['YFinance', 'AnálisisTécnico.com.ar', 'IOL (Invertir Online)', 'ByMA Data']
-    selected_source = st.sidebar.selectbox('Seleccionar Fuente de Datos', data_sources)
 
-    # Add mode selection
     mode = st.radio("Selecciona el modo",
                     ["Un Ticker, Múltiples Años",
-                     "Múltiples Tickers, Un Año (Cambios Semanales)",
-                     "Múltiples Tickers, Un Año (Cambios Mensuales)"])
+                     "Múltiples Tickers o Ratios, Un Año (Cambios Semanales)",
+                     "Múltiples Tickers o Ratios, Un Año (Cambios Mensuales)"])
 
     if mode == "Un Ticker, Múltiples Años":
         with st.sidebar:
-            ticker = st.text_input("Introduce el Ticker de la Acción", value="AAPL")
+            selected_source = st.selectbox('Seleccionar Fuente de Datos', data_sources)
+            ticker = st.text_input("Introduce el Ticker de la Acción (no se admiten ratios en este modo)", value="AAPL")
             start_date = st.date_input("Fecha de Inicio", value=pd.to_datetime("2017-01-01"))
             end_date = st.date_input("Fecha de Fin", value=pd.to_datetime("2019-12-31"))
             confirm_data = st.button("Confirmar Datos")
 
         if confirm_data:
-            try:
-                with st.spinner('Obteniendo y procesando datos...'):
-                    stock_data = fetch_stock_data(ticker, start_date, end_date, selected_source)
-                    weekly_df = calculate_weekly_variation(stock_data).to_frame(name='Variación')
-                    weekly_df['Año'] = weekly_df.index.year
-                    weekly_df['Semana'] = weekly_df.index.isocalendar().week
-                    heatmap_data = weekly_df.pivot(index='Semana', columns='Año', values='Variación')
+            if '/' in ticker:
+                st.error("Ratios no están soportados en el modo 'Un Ticker, Múltiples Años'. Introduce un solo ticker.")
+            else:
+                try:
+                    with st.spinner('Obteniendo y procesando datos...'):
+                        stock_data = fetch_stock_data(ticker, start_date, end_date, selected_source)
+                        weekly_df = calculate_weekly_variation(stock_data).to_frame(name='Variación')
+                        weekly_df['Año'] = weekly_df.index.year
+                        weekly_df['Semana'] = weekly_df.index.isocalendar().week
+                        heatmap_data = weekly_df.pivot(index='Semana', columns='Año', values='Variación')
 
-                    fig = plot_comparison_heatmap(heatmap_data, f'Heatmap de Variación Semanal para {ticker}')
-                    st.pyplot(fig, dpi=300)
+                        fig = plot_comparison_heatmap(heatmap_data, f'Heatmap de Variación Semanal para {ticker}', start_date.year)
+                        st.pyplot(fig, dpi=300)
+                except Exception as e:
+                    st.error(f"Ocurrió un error: {str(e)}")
+                    st.info("Por favor, verifica si el símbolo del ticker es válido y si el rango de fechas es apropiado.")
 
-            except Exception as e:
-                st.error(f"Ocurrió un error: {str(e)}")
-                st.info("Por favor, verifica si el símbolo del ticker es válido y si el rango de fechas es apropiado.")
-
-    elif mode == "Múltiples Tickers, Un Año (Cambios Semanales)":
+    else:
         with st.sidebar:
-            tickers = st.text_input("Introduce los Tickers de las Acciones (separados por comas)", value="AAPL, MSFT, GOOGL")
+            selected_sources = st.multiselect('Seleccionar Fuentes de Datos', data_sources, default=['YFinance'])
+            ticker_inputs = {}
+            for source in selected_sources:
+                ticker_input = st.text_input(
+                    f"Tickers o Ratios para {source} (separados por comas, ej: AAPL, AL30/AL30D)",
+                    value="AAPL" if source == 'YFinance' else "YPFD.BA",
+                    key=f"ticker_{source}"
+                )
+                ticker_inputs[source] = ticker_input
+
             year = st.number_input("Selecciona el Año", min_value=2000, max_value=2025, value=2020, step=1)
             confirm_data = st.button("Confirmar Datos")
 
         if confirm_data:
+            if not selected_sources:
+                st.error("Por favor, selecciona al menos una fuente de datos.")
+                return
+
+            ticker_source_pairs = []
+            for source in selected_sources:
+                if ticker_inputs[source].strip():
+                    tickers = [t.strip() for t in ticker_inputs[source].split(",")]
+                    for ticker in tickers:
+                        if ticker:
+                            ticker_source_pairs.append((ticker, source))
+
+            if not ticker_source_pairs:
+                st.error("Por favor, introduce al menos un ticker o ratio.")
+                return
+
             try:
                 with st.spinner('Obteniendo y procesando datos...'):
-                    ticker_list = [ticker.strip().upper() for ticker in tickers.split(",")]
-                    comparison_data = prepare_comparison_data(ticker_list, year, selected_source)
-                    fig = plot_comparison_heatmap(comparison_data, f'Comparación de Variación Semanal para {year}')
-                    st.pyplot(fig, dpi=300)
-
+                    if mode == "Múltiples Tickers o Ratios, Un Año (Cambios Semanales)":
+                        comparison_data = prepare_comparison_data(ticker_source_pairs, year)
+                        fig = plot_comparison_heatmap(comparison_data, f'Comparación de Variación Semanal para {year}', year)
+                        st.pyplot(fig, dpi=300)
+                    else:  # Cambios Mensuales
+                        monthly_comparison_data = prepare_monthly_comparison_data(ticker_source_pairs, year)
+                        fig = plot_monthly_comparison_heatmap(monthly_comparison_data, f'Comparación de Variación Mensual para {year}')
+                        st.pyplot(fig, dpi=300)
             except Exception as e:
                 st.error(f"Ocurrió un error: {str(e)}")
-                st.info("Por favor, verifica si los tickers son válidos y si el año es apropiado.")
-
-    elif mode == "Múltiples Tickers, Un Año (Cambios Mensuales)":
-        with st.sidebar:
-            tickers = st.text_input("Introduce los Tickers de las Acciones (separados por comas)", value="AAPL, MSFT, GOOGL")
-            year = st.number_input("Selecciona el Año", min_value=2000, max_value=2025, value=2020, step=1)
-            confirm_data = st.button("Confirmar Datos")
-
-        if confirm_data:
-            try:
-                with st.spinner('Obteniendo y procesando datos...'):
-                    ticker_list = [ticker.strip().upper() for ticker in tickers.split(",")]
-                    monthly_comparison_data = prepare_monthly_comparison_data(ticker_list, year, selected_source)
-                    fig = plot_monthly_comparison_heatmap(monthly_comparison_data, f'Comparación de Variación Mensual para {year}')
-                    st.pyplot(fig, dpi=300)
-
-            except Exception as e:
-                st.error(f"Ocurrió un error: {str(e)}")
-                st.info("Por favor, verifica si los tickers son válidos y si el año es apropiado.")
+                st.info("Por favor, verifica si los tickers o ratios son válidos y si el año es apropiado.")
 
 if __name__ == "__main__":
     main()
