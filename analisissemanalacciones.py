@@ -403,13 +403,27 @@ def prepare_comparison_data(ticker_source_pairs, year):
         ticker_input = ticker_input.strip()
         start_date = f"{year - 1}-12-25"
         end_date = f"{year}-12-31"
-        stock_data = fetch_ratio_data(ticker_input, start_date, end_date, source)
+        if '/' not in ticker_input:
+            stock_data = fetch_stock_data(ticker_input, start_date, end_date, source)
+        else:
+            stock_data = fetch_ratio_data(ticker_input, start_date, end_date, source)
         display_name = ticker_input
 
         weekly_variation = calculate_weekly_variation(stock_data)
         comparison_data[display_name] = weekly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
 
-    comparison_data.index = comparison_data.index.strftime('Semana %U')
+    # NEW: Format index as DD/MM-DD/MM
+    # Get the week start (Monday) and end (Sunday) for each index date
+    week_ranges = []
+    for date in comparison_data.index:
+        # Resampled data uses last day of week (Sunday), so find Monday
+        week_start = date - timedelta(days=date.weekday())
+        week_end = week_start + timedelta(days=6)
+        week_start_str = week_start.strftime('%d/%m')
+        week_end_str = week_end.strftime('%d/%m')
+        week_ranges.append(f"{week_start_str}-{week_end_str}")
+    
+    comparison_data.index = week_ranges
     return comparison_data
 
 def plot_comparison_heatmap(data, title, year):
@@ -439,7 +453,7 @@ def plot_comparison_heatmap(data, title, year):
 
     plt.title(title, pad=20, fontsize=16, weight='bold', family='Arial')
     ax.set_xlabel('Ticker/Ratio', fontsize=12, family='Arial', weight='bold')
-    ax.set_ylabel('Week Number', fontsize=12, family='Arial', weight='bold')
+    ax.set_ylabel('Week Range (DD/MM-DD/MM)', fontsize=12, family='Arial', weight='bold')
 
     ax2 = ax.twiny()
     ax2.set_xlim(ax.get_xlim())
@@ -449,14 +463,16 @@ def plot_comparison_heatmap(data, title, year):
     ax.tick_params(axis='both', which='major', labelsize=10)
     ax2.tick_params(axis='x', which='major', labelsize=10)
 
-    week_numbers = [int(idx.split()[-1]) for idx in data.index]
-    min_week = min(week_numbers)
-    max_week = max(week_numbers)
+    # NEW: Map quarter starts to week range indices
+    week_ranges = data.index
+    week_dates = [datetime.strptime(r.split('-')[0], '%d/%m') for r in week_ranges]
+    # Adjust year for weeks starting in December of previous year
+    week_dates = [d.replace(year=year) if d.month != 12 else d.replace(year=year-1) for d in week_dates]
 
-    q1_start = datetime(year, 1, 1).isocalendar()[1]
-    q2_start = datetime(year, 4, 1).isocalendar()[1]
-    q3_start = datetime(year, 7, 1).isocalendar()[1]
-    q4_start = datetime(year, 10, 1).isocalendar()[1]
+    q1_start = datetime(year, 1, 1)
+    q2_start = datetime(year, 4, 1)
+    q3_start = datetime(year, 7, 1)
+    q4_start = datetime(year, 10, 1)
 
     quarter_starts = {
         'Q1': q1_start,
@@ -466,11 +482,17 @@ def plot_comparison_heatmap(data, title, year):
     }
     quarter_positions = []
     quarter_labels = []
-    for qtr, start_week in quarter_starts.items():
-        if min_week <= start_week <= max_week:
-            position = start_week - min_week
-            quarter_positions.append(position)
-            quarter_labels.append(qtr)
+    for qtr, q_start in quarter_starts.items():
+        # Find the closest week start to the quarter start
+        min_diff = float('inf')
+        closest_idx = 0
+        for idx, week_date in enumerate(week_dates):
+            diff = abs((week_date - q_start).days)
+            if diff < min_diff:
+                min_diff = diff
+                closest_idx = idx
+        quarter_positions.append(closest_idx)
+        quarter_labels.append(qtr)
 
     ax3 = ax.twinx()
     ax3.set_ylim(ax.get_ylim())
@@ -478,94 +500,23 @@ def plot_comparison_heatmap(data, title, year):
     ax3.set_yticklabels(quarter_labels, fontsize=12, weight='bold', family='Arial')
     ax3.tick_params(length=0)
 
-    quarter_boundaries = [
-        (q2_start - min_week - 1) if min_week <= q2_start - 1 <= max_week else None,
-        (q3_start - min_week - 1) if min_week <= q3_start - 1 <= max_week else None,
-        (q4_start - min_week - 1) if min_week <= q4_start - 1 <= max_week else None
-    ]
+    # NEW: Quarter boundaries based on week ranges
+    quarter_boundaries = []
+    for q_start in [q2_start, q3_start, q4_start]:
+        min_diff = float('inf')
+        closest_idx = None
+        for idx, week_date in enumerate(week_dates):
+            diff = abs((week_date - q_start).days)
+            if diff < min_diff:
+                min_diff = diff
+                closest_idx = idx
+        if closest_idx is not None:
+            quarter_boundaries.append(closest_idx)
+
     for boundary in quarter_boundaries:
         if boundary is not None and boundary >= 0:
             ax.hlines(y=boundary, xmin=0, xmax=data.shape[1],
                       colors='black', linestyles='solid', linewidth=2)
-
-    fig.text(0.5, 0.5, "MTaurus - X: @MTaurus_ok", fontsize=12, color='gray',
-             ha='center', va='center', alpha=0.5, weight='bold', family='Arial')
-
-    plt.tight_layout()
-    return fig
-
-def calculate_monthly_variation(data):
-    if isinstance(data.columns, pd.MultiIndex):
-        close_prices = data['Close'].iloc[:, 0]
-    else:
-        close_prices = data['Close']
-
-    monthly_data = close_prices.resample('M').last()
-    try:
-        previous_december = close_prices.loc[:monthly_data.index[0] - pd.offsets.MonthBegin(1)].iloc[-1]
-    except IndexError:
-        previous_december = None
-
-    monthly_variation = monthly_data.pct_change()
-    if previous_december is not None:
-        monthly_variation.iloc[0] = (monthly_data.iloc[0] - previous_december) / previous_december
-    else:
-        monthly_variation.iloc[0] = 0
-
-    return monthly_variation
-
-def prepare_monthly_comparison_data(ticker_source_pairs, year):
-    comparison_data = pd.DataFrame()
-
-    for ticker_input, source in ticker_source_pairs:
-        ticker_input = ticker_input.strip()
-        start_date = f"{year - 1}-12-01"
-        end_date = f"{year}-12-31"
-        stock_data = fetch_ratio_data(ticker_input, start_date, end_date, source)
-        display_name = ticker_input
-
-        monthly_variation = calculate_monthly_variation(stock_data)
-        comparison_data[display_name] = monthly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
-
-    comparison_data.index = comparison_data.index.strftime('%b')
-    return comparison_data
-
-def plot_monthly_comparison_heatmap(data, title):
-    plt.clf()
-    fig = plt.figure(figsize=(10, 8), dpi=300)
-    ax = plt.gca()
-    custom_cmap = sns.diverging_palette(h_neg=10, h_pos=130, s=99, l=55, sep=3, as_cmap=True)
-    max_abs_val = max(abs(data.min().min()), abs(data.max().max()))
-
-    base_size = 8
-    reference_cells = 12 * 5
-    num_cells = data.shape[0] * data.shape[1]
-    font_size = base_size * math.sqrt(reference_cells / max(num_cells, 1))
-    font_size = max(6, min(12, font_size))
-
-    sns.heatmap(data,
-                cmap=custom_cmap,
-                center=0,
-                vmin=-max_abs_val,
-                vmax=max_abs_val,
-                annot=True,
-                fmt='.1%',
-                annot_kws={'size': font_size, 'weight': 'bold', 'family': 'Arial'},
-                cbar_kws={'label': 'Variación Mensual', 'shrink': 0.8},
-                square=False,
-                ax=ax)
-
-    plt.title(title, pad=20, fontsize=16, weight='bold', family='Arial')
-    ax.set_xlabel('Ticker/Ratio', fontsize=12, family='Arial', weight='bold')
-    ax.set_ylabel('Mes', fontsize=12, family='Arial', weight='bold')
-
-    ax2 = ax.twiny()
-    ax2.set_xlim(ax.get_xlim())
-    ax2.set_xticks(ax.get_xticks())
-    ax2.set_xticklabels(data.columns, rotation=45, ha='left')
-    ax.set_xticklabels(data.columns, rotation=45, ha='right')
-    ax.tick_params(axis='both', which='major', labelsize=10)
-    ax2.tick_params(axis='x', which='major', labelsize=10)
 
     fig.text(0.5, 0.5, "MTaurus - X: @MTaurus_ok", fontsize=12, color='gray',
              ha='center', va='center', alpha=0.5, weight='bold', family='Arial')
@@ -602,7 +553,7 @@ def main():
                         heatmap_data = weekly_df.pivot(index='Semana', columns='Año', values='Variación')
 
                         fig = plot_comparison_heatmap(heatmap_data, f'Heatmap de Variación Semanal para {ticker}', start_date.year)
-                        st.pyplot(fig, dpi=300)
+                        st.pyplot(fig)
                 except Exception as e:
                     st.error(f"Ocurrió un error: {str(e)}")
                     st.info("Por favor, verifica si el símbolo del ticker es válido y si el rango de fechas es apropiado.")
@@ -610,11 +561,16 @@ def main():
     else:
         with st.sidebar:
             selected_sources = st.multiselect('Seleccionar Fuentes de Datos', data_sources, default=['YFinance'])
+            debug_mode = st.checkbox("Modo Debug (muestra logs detallados)")
+            
             ticker_inputs = {}
             for source in selected_sources:
+                default_ticker = "^MERV/(YPFD.BA/YPF)" if source != 'YFinance' else "AAPL, MSFT"
+                if source == 'YFinance' and '^MERV' in default_ticker:
+                    st.warning("Para ^MERV, usa 'ByMA Data' o 'AnálisisTécnico.com.ar'. YFinance no soporta este índice.")
                 ticker_input = st.text_input(
                     f"Tickers o Ratios para {source} (separados por comas, ej: AAPL, ^MERV/(YPFD.BA/YPF))",
-                    value="AAPL" if source == 'YFinance' else "^MERV/(YPFD.BA/YPF)",
+                    value=default_ticker,
                     key=f"ticker_{source}"
                 )
                 ticker_inputs[source] = ticker_input
@@ -643,15 +599,21 @@ def main():
                 with st.spinner('Obteniendo y procesando datos...'):
                     if mode == "Múltiples Tickers o Ratios, Un Año (Cambios Semanales)":
                         comparison_data = prepare_comparison_data(ticker_source_pairs, year)
+                        if comparison_data.empty:
+                            st.error("No se pudo generar datos para el heatmap.")
+                            return
                         fig = plot_comparison_heatmap(comparison_data, f'Comparación de Variación Semanal para {year}', year)
-                        st.pyplot(fig, dpi=300)
+                        st.pyplot(fig)
                     else:  # Cambios Mensuales
                         monthly_comparison_data = prepare_monthly_comparison_data(ticker_source_pairs, year)
+                        if monthly_comparison_data.empty:
+                            st.error("No se pudo generar datos para el heatmap.")
+                            return
                         fig = plot_monthly_comparison_heatmap(monthly_comparison_data, f'Comparación de Variación Mensual para {year}')
-                        st.pyplot(fig, dpi=300)
+                        st.pyplot(fig)
             except Exception as e:
                 st.error(f"Ocurrió un error: {str(e)}")
-                st.info("Por favor, verifica si los tickers o ratios son válidos y si el año es apropiado.")
+                st.info("Por favor, verifica si los tickers o ratios son válidos y si el año es apropiado. Prueba con 'ByMA Data' para ^MERV.")
 
 if __name__ == "__main__":
     main()
