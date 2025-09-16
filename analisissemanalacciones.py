@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import math
 import re  # For parsing complex ratio expressions
