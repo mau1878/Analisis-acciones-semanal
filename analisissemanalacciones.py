@@ -6,13 +6,12 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import requests
 import math
-import re  # NEW: For parsing complex ratio expressions
+import re  # For parsing complex ratio expressions
 
 st.set_page_config(layout="wide")
 st.title("Stock and Ratio Weekly/Monthly Variation Heatmap")
 
-# Existing data source functions (descargar_datos_yfinance, etc.) remain unchanged
-# ... [Include all the existing data source functions here for completeness] ...
+# Data source functions (unchanged)
 def descargar_datos_yfinance(ticker, start, end):
     try:
         stock_data = yf.download(ticker, start=start, end=end)
@@ -226,11 +225,48 @@ def descargar_datos_byma(ticker, start_date, end_date):
     except Exception as e:
         st.error(f"Error downloading data from ByMA Data for {ticker}: {e}")
         return pd.DataFrame()
+
+# NEW: Helper to extract 1D Close Series, handling MultiIndex
+def extract_close_prices(data):
+    if data.empty:
+        return pd.Series(dtype=float)
+    
+    # If MultiIndex columns (from yf.download single ticker)
+    if isinstance(data.columns, pd.MultiIndex):
+        # Use 'Adj Close' if available, else 'Close'
+        if ('Adj Close', 'Close') in data.columns:
+            close_series = data['Adj Close']['Close']
+        elif ('Close', 'Close') in data.columns:
+            close_series = data['Close']['Close']
+        else:
+            # Fallback to first column
+            close_series = data.iloc[:, 0]
+    else:
+        # Single-level columns
+        if 'Adj Close' in data.columns:
+            close_series = data['Adj Close']
+        elif 'Close' in data.columns:
+            close_series = data['Close']
+        else:
+            close_series = data.iloc[:, 0]
+    
+    # Ensure it's a Series (1D)
+    if isinstance(close_series, pd.DataFrame):
+        close_series = close_series.squeeze()  # Flatten if needed
+    
+    return close_series
+
 @st.cache_data(ttl=86400)
 def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
     try:
         if source == 'YFinance':
-            return descargar_datos_yfinance(ticker, start_date, end_date)
+            raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
+            # Extract Close using helper for consistency
+            close_prices = extract_close_prices(raw_data)
+            if close_prices.empty:
+                return pd.DataFrame()
+            df = pd.DataFrame({'Close': close_prices})
+            return df
         elif source == 'AnálisisTécnico.com.ar':
             return descargar_datos_analisistecnico(ticker, start_date, end_date)
         elif source == 'IOL (Invertir Online)':
@@ -245,14 +281,22 @@ def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
         return pd.DataFrame()
 
 @st.cache_data(ttl=86400)
-def fetch_ratio_data(ratio_expr, start_date, end_date, source='YFinance'):
+def fetch_ratio_data(ratio_expr, start_date, end_date, source='YFinance', _debug=False):
     try:
-        # Parse the ratio expression
+        if _debug:
+            st.info(f"Debug: Processing ratio '{ratio_expr}' from {source}")
+
+        # Parse the ratio expression (improved for nesting)
         def parse_ratio(expr):
-            # Remove extra spaces and handle nested ratios
             expr = expr.strip()
-            # Find the main division
-            # Handle nested ratios by finding the outermost division
+            if not '/' in expr:
+                return expr, None
+            
+            # Handle outer parentheses if present
+            if expr.startswith('(') and expr.endswith(')'):
+                expr = expr[1:-1]
+            
+            # Find outermost '/' by tracking paren depth
             depth = 0
             split_idx = -1
             for i, char in enumerate(expr):
@@ -265,51 +309,60 @@ def fetch_ratio_data(ratio_expr, start_date, end_date, source='YFinance'):
                     break
             
             if split_idx == -1:
-                # No division found, treat as a single ticker
-                return expr.strip(), None
+                st.error(f"Invalid ratio expression: {ratio_expr} (no valid '/' found)")
+                return None, None
             
             numerator = expr[:split_idx].strip()
             denominator = expr[split_idx + 1:].strip()
             return numerator, denominator
 
         def compute_ratio(num_expr, denom_expr, start_date, end_date, source):
-            # Compute data for numerator
-            if '/' in num_expr and '(' in num_expr:
-                num_data = fetch_ratio_data(num_expr, start_date, end_date, source)
-            else:
+            # Recursively fetch numerator
+            if denom_expr is None or '/' not in num_expr:
+                # Single ticker
+                if _debug:
+                    st.info(f"Debug: Fetching single ticker '{num_expr}'")
                 num_data = fetch_stock_data(num_expr, start_date, end_date, source)
-            
-            # Compute data for denominator
+            else:
+                # Nested ratio in numerator
+                if _debug:
+                    st.info(f"Debug: Recursing for numerator '{num_expr}'")
+                num_data = fetch_ratio_data(num_expr, start_date, end_date, source, _debug)
+
+            # Fetch denominator
             if denom_expr is None:
-                # Single ticker case
                 return num_data
-            elif '/' in denom_expr and '(' in denom_expr:
-                denom_data = fetch_ratio_data(denom_expr, start_date, end_date, source)
+            if '/' in denom_expr:
+                if _debug:
+                    st.info(f"Debug: Recursing for denominator '{denom_expr}'")
+                denom_data = fetch_ratio_data(denom_expr, start_date, end_date, source, _debug)
             else:
                 denom_data = fetch_stock_data(denom_expr, start_date, end_date, source)
 
             if num_data.empty or denom_data.empty:
-                st.error(f"Cannot compute ratio {ratio_expr}: Data missing for one or both components")
+                st.error(f"Cannot compute ratio {ratio_expr}: Data missing for num='{num_expr}' or denom='{denom_expr}'")
                 return pd.DataFrame()
 
-            num_close = num_data['Close'] if 'Close' in num_data.columns else num_data.iloc[:, 0]
-            denom_close = denom_data['Close'] if 'Close' in denom_data.columns else denom_data.iloc[:, 0]
+            # Use helper to get 1D Series
+            num_close = extract_close_prices(num_data)
+            denom_close = extract_close_prices(denom_data)
+
+            if num_close.empty or denom_close.empty:
+                st.error(f"Cannot compute ratio {ratio_expr}: Close prices missing after extraction")
+                return pd.DataFrame()
 
             aligned_data = pd.concat([num_close, denom_close], axis=1, keys=['num', 'denom']).dropna()
             ratio_data = pd.DataFrame({
                 'Close': aligned_data['num'] / aligned_data['denom']
             }, index=aligned_data.index)
 
+            if _debug:
+                st.info(f"Debug: Ratio computed successfully for {ratio_expr}, shape: {ratio_data.shape}")
             return ratio_data
 
-        # Handle nested ratios by checking for parentheses
-        if '(' in ratio_expr and ')' in ratio_expr:
-            # Remove outer parentheses if present
-            if ratio_expr.startswith('(') and ratio_expr.endswith(')'):
-                ratio_expr = ratio_expr[1:-1]
-            numerator, denominator = parse_ratio(ratio_expr)
-        else:
-            numerator, denominator = parse_ratio(ratio_expr)
+        numerator, denominator = parse_ratio(ratio_expr)
+        if numerator is None:
+            return pd.DataFrame()
 
         return compute_ratio(numerator, denominator, start_date, end_date, source)
 
