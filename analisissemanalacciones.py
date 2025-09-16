@@ -6,12 +6,12 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import requests
 import math
-import re  # For parsing complex ratio expressions
+import re
 
 st.set_page_config(layout="wide")
 st.title("Stock and Ratio Weekly/Monthly Variation Heatmap")
 
-# Data source functions (unchanged)
+# Data source functions
 def descargar_datos_yfinance(ticker, start, end):
     try:
         stock_data = yf.download(ticker, start=start, end=end)
@@ -226,23 +226,18 @@ def descargar_datos_byma(ticker, start_date, end_date):
         st.error(f"Error downloading data from ByMA Data for {ticker}: {e}")
         return pd.DataFrame()
 
-# NEW: Helper to extract 1D Close Series, handling MultiIndex
 def extract_close_prices(data):
     if data.empty:
         return pd.Series(dtype=float)
     
-    # If MultiIndex columns (from yf.download single ticker)
     if isinstance(data.columns, pd.MultiIndex):
-        # Use 'Adj Close' if available, else 'Close'
         if ('Adj Close', 'Close') in data.columns:
             close_series = data['Adj Close']['Close']
         elif ('Close', 'Close') in data.columns:
             close_series = data['Close']['Close']
         else:
-            # Fallback to first column
             close_series = data.iloc[:, 0]
     else:
-        # Single-level columns
         if 'Adj Close' in data.columns:
             close_series = data['Adj Close']
         elif 'Close' in data.columns:
@@ -250,9 +245,8 @@ def extract_close_prices(data):
         else:
             close_series = data.iloc[:, 0]
     
-    # Ensure it's a Series (1D)
     if isinstance(close_series, pd.DataFrame):
-        close_series = close_series.squeeze()  # Flatten if needed
+        close_series = close_series.squeeze()
     
     return close_series
 
@@ -261,7 +255,6 @@ def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
     try:
         if source == 'YFinance':
             raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
-            # Extract Close using helper for consistency
             close_prices = extract_close_prices(raw_data)
             if close_prices.empty:
                 return pd.DataFrame()
@@ -286,17 +279,14 @@ def fetch_ratio_data(ratio_expr, start_date, end_date, source='YFinance', _debug
         if _debug:
             st.info(f"Debug: Processing ratio '{ratio_expr}' from {source}")
 
-        # Parse the ratio expression (improved for nesting)
         def parse_ratio(expr):
             expr = expr.strip()
             if not '/' in expr:
                 return expr, None
             
-            # Handle outer parentheses if present
             if expr.startswith('(') and expr.endswith(')'):
                 expr = expr[1:-1]
             
-            # Find outermost '/' by tracking paren depth
             depth = 0
             split_idx = -1
             for i, char in enumerate(expr):
@@ -317,19 +307,15 @@ def fetch_ratio_data(ratio_expr, start_date, end_date, source='YFinance', _debug
             return numerator, denominator
 
         def compute_ratio(num_expr, denom_expr, start_date, end_date, source):
-            # Recursively fetch numerator
-            if denom_expr is None or '/' not in num_expr:
-                # Single ticker
+            if denom_expr is None:
                 if _debug:
                     st.info(f"Debug: Fetching single ticker '{num_expr}'")
                 num_data = fetch_stock_data(num_expr, start_date, end_date, source)
             else:
-                # Nested ratio in numerator
                 if _debug:
                     st.info(f"Debug: Recursing for numerator '{num_expr}'")
                 num_data = fetch_ratio_data(num_expr, start_date, end_date, source, _debug)
 
-            # Fetch denominator
             if denom_expr is None:
                 return num_data
             if '/' in denom_expr:
@@ -343,7 +329,6 @@ def fetch_ratio_data(ratio_expr, start_date, end_date, source='YFinance', _debug
                 st.error(f"Cannot compute ratio {ratio_expr}: Data missing for num='{num_expr}' or denom='{denom_expr}'")
                 return pd.DataFrame()
 
-            # Use helper to get 1D Series
             num_close = extract_close_prices(num_data)
             denom_close = extract_close_prices(denom_data)
 
@@ -374,13 +359,7 @@ def calculate_weekly_variation(data):
     if data.empty:
         raise ValueError("No data available for the specified ticker and time range")
 
-    if 'Close' not in data.columns and not isinstance(data.columns, pd.MultiIndex):
-        raise ValueError("Data does not contain required 'Close' column")
-
-    if isinstance(data.columns, pd.MultiIndex):
-        close_prices = data['Close'].iloc[:, 0]
-    else:
-        close_prices = data['Close']
+    close_prices = extract_close_prices(data)
 
     weekly_data = close_prices.resample('W').last()
     try:
@@ -412,11 +391,8 @@ def prepare_comparison_data(ticker_source_pairs, year):
         weekly_variation = calculate_weekly_variation(stock_data)
         comparison_data[display_name] = weekly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
 
-    # NEW: Format index as DD/MM-DD/MM
-    # Get the week start (Monday) and end (Sunday) for each index date
     week_ranges = []
     for date in comparison_data.index:
-        # Resampled data uses last day of week (Sunday), so find Monday
         week_start = date - timedelta(days=date.weekday())
         week_end = week_start + timedelta(days=6)
         week_start_str = week_start.strftime('%d/%m')
@@ -463,10 +439,8 @@ def plot_comparison_heatmap(data, title, year):
     ax.tick_params(axis='both', which='major', labelsize=10)
     ax2.tick_params(axis='x', which='major', labelsize=10)
 
-    # NEW: Map quarter starts to week range indices
     week_ranges = data.index
-    week_dates = [datetime.strptime(r.split('-')[0], '%d/%m') for r in week_ranges]
-    # Adjust year for weeks starting in December of previous year
+    week_dates = [datetime.strptime(r.split('-')[0] + f'/{year}', '%d/%m/%Y') for r in week_ranges]
     week_dates = [d.replace(year=year) if d.month != 12 else d.replace(year=year-1) for d in week_dates]
 
     q1_start = datetime(year, 1, 1)
@@ -483,7 +457,6 @@ def plot_comparison_heatmap(data, title, year):
     quarter_positions = []
     quarter_labels = []
     for qtr, q_start in quarter_starts.items():
-        # Find the closest week start to the quarter start
         min_diff = float('inf')
         closest_idx = 0
         for idx, week_date in enumerate(week_dates):
@@ -500,7 +473,6 @@ def plot_comparison_heatmap(data, title, year):
     ax3.set_yticklabels(quarter_labels, fontsize=12, weight='bold', family='Arial')
     ax3.tick_params(length=0)
 
-    # NEW: Quarter boundaries based on week ranges
     quarter_boundaries = []
     for q_start in [q2_start, q3_start, q4_start]:
         min_diff = float('inf')
@@ -517,6 +489,85 @@ def plot_comparison_heatmap(data, title, year):
         if boundary is not None and boundary >= 0:
             ax.hlines(y=boundary, xmin=0, xmax=data.shape[1],
                       colors='black', linestyles='solid', linewidth=2)
+
+    fig.text(0.5, 0.5, "MTaurus - X: @MTaurus_ok", fontsize=12, color='gray',
+             ha='center', va='center', alpha=0.5, weight='bold', family='Arial')
+
+    plt.tight_layout()
+    return fig
+
+def calculate_monthly_variation(data):
+    close_prices = extract_close_prices(data)
+
+    monthly_data = close_prices.resample('M').last()
+    try:
+        previous_december = close_prices.loc[:monthly_data.index[0] - pd.offsets.MonthBegin(1)].iloc[-1]
+    except IndexError:
+        previous_december = None
+
+    monthly_variation = monthly_data.pct_change()
+    if previous_december is not None:
+        monthly_variation.iloc[0] = (monthly_data.iloc[0] - previous_december) / previous_december
+    else:
+        monthly_variation.iloc[0] = 0
+
+    return monthly_variation
+
+def prepare_monthly_comparison_data(ticker_source_pairs, year):
+    comparison_data = pd.DataFrame()
+
+    for ticker_input, source in ticker_source_pairs:
+        ticker_input = ticker_input.strip()
+        start_date = f"{year - 1}-12-01"
+        end_date = f"{year}-12-31"
+        if '/' not in ticker_input:
+            stock_data = fetch_stock_data(ticker_input, start_date, end_date, source)
+        else:
+            stock_data = fetch_ratio_data(ticker_input, start_date, end_date, source)
+        display_name = ticker_input
+
+        monthly_variation = calculate_monthly_variation(stock_data)
+        comparison_data[display_name] = monthly_variation.loc[f"{year}-01-01":f"{year}-12-31"]
+
+    comparison_data.index = comparison_data.index.strftime('%b')
+    return comparison_data
+
+def plot_monthly_comparison_heatmap(data, title):
+    plt.clf()
+    fig = plt.figure(figsize=(10, 8), dpi=300)
+    ax = plt.gca()
+    custom_cmap = sns.diverging_palette(h_neg=10, h_pos=130, s=99, l=55, sep=3, as_cmap=True)
+    max_abs_val = max(abs(data.min().min()), abs(data.max().max()))
+
+    base_size = 8
+    reference_cells = 12 * 5
+    num_cells = data.shape[0] * data.shape[1]
+    font_size = base_size * math.sqrt(reference_cells / max(num_cells, 1))
+    font_size = max(6, min(12, font_size))
+
+    sns.heatmap(data,
+                cmap=custom_cmap,
+                center=0,
+                vmin=-max_abs_val,
+                vmax=max_abs_val,
+                annot=True,
+                fmt='.1%',
+                annot_kws={'size': font_size, 'weight': 'bold', 'family': 'Arial'},
+                cbar_kws={'label': 'Variación Mensual', 'shrink': 0.8},
+                square=False,
+                ax=ax)
+
+    plt.title(title, pad=20, fontsize=16, weight='bold', family='Arial')
+    ax.set_xlabel('Ticker/Ratio', fontsize=12, family='Arial', weight='bold')
+    ax.set_ylabel('Mes', fontsize=12, family='Arial', weight='bold')
+
+    ax2 = ax.twiny()
+    ax2.set_xlim(ax.get_xlim())
+    ax2.set_xticks(ax.get_xticks())
+    ax2.set_xticklabels(data.columns, rotation=45, ha='left')
+    ax.set_xticklabels(data.columns, rotation=45, ha='right')
+    ax.tick_params(axis='both', which='major', labelsize=10)
+    ax2.tick_params(axis='x', which='major', labelsize=10)
 
     fig.text(0.5, 0.5, "MTaurus - X: @MTaurus_ok", fontsize=12, color='gray',
              ha='center', va='center', alpha=0.5, weight='bold', family='Arial')
