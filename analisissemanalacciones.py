@@ -13,7 +13,219 @@ st.title("Stock and Ratio Weekly/Monthly Variation Heatmap")
 
 # Existing data source functions (descargar_datos_yfinance, etc.) remain unchanged
 # ... [Include all the existing data source functions here for completeness] ...
+def descargar_datos_yfinance(ticker, start, end):
+    try:
+        stock_data = yf.download(ticker, start=start, end=end)
+        return stock_data
+    except Exception as e:
+        st.error(f"Error downloading data from yfinance for {ticker}: {e}")
+        return pd.DataFrame()
 
+def descargar_datos_analisistecnico(ticker, start_date, end_date):
+    try:
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        elif isinstance(start_date, datetime):
+            start_date = start_date.date()
+
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        elif isinstance(end_date, datetime):
+            end_date = end_date.date()
+
+        from_timestamp = int(datetime.combine(start_date, datetime.min.time()).timestamp())
+        to_timestamp = int(datetime.combine(end_date, datetime.max.time()).timestamp())
+
+        cookies = {
+            'ChyrpSession': '0e2b2109d60de6da45154b542afb5768',
+            'i18next': 'es',
+            'PHPSESSID': '5b8da4e0d96ab5149f4973232931f033',
+        }
+
+        headers = {
+            'accept': '*/*',
+            'content-type': 'text/plain',
+            'dnt': '1',
+            'referer': 'https://analisistecnico.com.ar/',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        }
+
+        symbol = ticker.replace('.BA', '')
+
+        params = {
+            'symbol': symbol,
+            'resolution': 'D',
+            'from': str(from_timestamp),
+            'to': str(to_timestamp),
+        }
+
+        response = requests.get(
+            'https://analisistecnico.com.ar/services/datafeed/history',
+            params=params,
+            cookies=cookies,
+            headers=headers,
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if not all(key in data for key in ['t', 'c', 'o', 'h', 'l', 'v']):
+                st.error(f"Incomplete data received for {ticker}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame({
+                'Date': pd.to_datetime(data['t'], unit='s'),
+                'Close': data['c'],
+                'Open': data['o'],
+                'High': data['h'],
+                'Low': data['l'],
+                'Volume': data['v']
+            })
+            df = df.sort_values('Date').drop_duplicates(subset=['Date'])
+            df.set_index('Date', inplace=True)
+            return df[['Close']]
+        else:
+            st.error(f"Error fetching data for {ticker}: Status code {response.status_code}")
+            return pd.DataFrame()
+
+    except Exception as e:
+        st.error(f"Error downloading data from analisistecnico for {ticker}: {e}")
+        return pd.DataFrame()
+
+def descargar_datos_iol(ticker, start_date, end_date):
+    try:
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        elif isinstance(start_date, datetime):
+            start_date = start_date.date()
+
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        elif isinstance(end_date, datetime):
+            end_date = end_date.date()
+
+        from_timestamp = int(datetime.combine(start_date, datetime.min.time()).timestamp())
+        to_timestamp = int(datetime.combine(end_date, datetime.max.time()).timestamp())
+
+        cookies = {
+            'intencionApertura': '0',
+            '__RequestVerificationToken': 'DTGdEz0miQYq1kY8y4XItWgHI9HrWQwXms6xnwndhugh0_zJxYQvnLiJxNk4b14NmVEmYGhdfSCCh8wuR0ZhVQ-oJzo1',
+            'isLogged': '1',
+            'uid': '1107644',
+        }
+
+        headers = {
+            'accept': '*/*',
+            'content-type': 'text/plain',
+            'referer': 'https://iol.invertironline.com',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        }
+
+        symbol = ticker.replace('.BA', '')
+
+        params = {
+            'symbolName': symbol,
+            'exchange': 'BCBA',
+            'from': str(from_timestamp),
+            'to': str(to_timestamp),
+            'resolution': 'D',
+        }
+
+        response = requests.get(
+            'https://iol.invertironline.com/api/cotizaciones/history',
+            params=params,
+            cookies=cookies,
+            headers=headers,
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('status') != 'ok' or 'bars' not in data:
+                st.error(f"Error in API response for {ticker}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(data['bars'])
+            df['Date'] = pd.to_datetime(df['time'], unit='s')
+            df['Close'] = df['close']
+            df = df[['Date', 'Close']]
+            df.set_index('Date', inplace=True)
+            df = df.sort_index().drop_duplicates()
+            return df
+        else:
+            st.error(f"Error fetching data for {ticker}: Status code {response.status_code}")
+            return pd.DataFrame()
+
+    except Exception as e:
+        st.error(f"Error downloading data from IOL for {ticker}: {e}")
+        return pd.DataFrame()
+
+def descargar_datos_byma(ticker, start_date, end_date):
+    try:
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        elif isinstance(start_date, datetime):
+            start_date = start_date.date()
+
+        if isinstance(end_date, str):
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        elif isinstance(end_date, datetime):
+            end_date = end_date.date()
+
+        from_timestamp = int(datetime.combine(start_date, datetime.min.time()).timestamp())
+        to_timestamp = int(datetime.combine(end_date, datetime.max.time()).timestamp())
+
+        cookies = {
+            'JSESSIONID': '5080400C87813D22F6CAF0D3F2D70338',
+            '_fbp': 'fb.2.1728347943669.954945632708052302',
+        }
+
+        headers = {
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'de-DE,de;q=0.9,es-AR;q=0.8,es;q=0.7,en-DE;q=0.6,en;q=0.5,en-US;q=0.4',
+            'Connection': 'keep-alive',
+            'DNT': '1',
+            'Referer': 'https://open.bymadata.com.ar/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        }
+
+        symbol = ticker.replace('.BA', '')
+        if not symbol.endswith(' 24HS'):
+            symbol = f"{symbol} 24HS"
+
+        params = {
+            'symbol': symbol,
+            'resolution': 'D',
+            'from': str(from_timestamp),
+            'to': str(to_timestamp),
+        }
+
+        response = requests.get(
+            'https://open.bymadata.com.ar/vanoms-be-core/rest/api/bymadata/free/chart/historical-series/history',
+            params=params,
+            cookies=cookies,
+            headers=headers,
+            verify=False
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if not all(key in data for key in ['t', 'c']):
+                st.error(f"Incomplete data received for {ticker}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame({
+                'Date': pd.to_datetime(data['t'], unit='s'),
+                'Close': data['c']
+            })
+            df = df.sort_values('Date').drop_duplicates(subset=['Date'])
+            df.set_index('Date', inplace=True)
+            return df
+        else:
+            st.error(f"Error fetching data for {ticker}: Status code {response.status_code}")
+            return pd.DataFrame()
+
+    except Exception as e:
+        st.error(f"Error downloading data from ByMA Data for {ticker}: {e}")
+        return pd.DataFrame()
 @st.cache_data(ttl=86400)
 def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
     try:
