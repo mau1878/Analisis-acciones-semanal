@@ -701,7 +701,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-Can you please make sure that, when the bonds that appear here:
-https://github.com/mau1878/Analisis-acciones-semanal/blob/main/bond_data.csv
-are chosen,  the data is adjusted by paid coupons? Ask me if you have doubts.
