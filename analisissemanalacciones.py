@@ -226,6 +226,21 @@ def descargar_datos_byma(ticker, start_date, end_date):
         st.error(f"Error downloading data from ByMA Data for {ticker}: {e}")
         return pd.DataFrame()
 
+
+@st.cache_data(ttl=86400)
+def load_bond_data():
+    url = "https://raw.githubusercontent.com/mau1878/Analisis-acciones-semanal/main/bond_data.csv"
+    try:
+        bond_data = pd.read_csv(url)
+        bond_data['Fecha'] = pd.to_datetime(bond_data['Fecha'], format='%d/%m/%Y')
+        return bond_data
+    except Exception as e:
+        st.error(f"Error loading bond data: {e}")
+        return pd.DataFrame()
+
+bond_data = load_bond_data()
+bonds_list = bond_data['Ticker'].unique().tolist() if not bond_data.empty else []
+
 def extract_close_prices(data):
     if data.empty:
         return pd.Series(dtype=float)
@@ -252,6 +267,27 @@ def extract_close_prices(data):
 
 @st.cache_data(ttl=86400)
 def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
+    if ticker in bonds_list:
+        try:
+            raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
+            if raw_data.empty:
+                return pd.DataFrame()
+            
+            close_prices = extract_close_prices(raw_data).to_frame(name='Close')
+            
+            ticker_coupons = bond_data[bond_data['Ticker'] == ticker]
+            
+            for _, coupon_row in ticker_coupons.iterrows():
+                payment_date = coupon_row['Fecha']
+                coupon_amount = coupon_row['Total']
+                
+                if payment_date in close_prices.index:
+                    close_prices.loc[payment_date:, 'Close'] += coupon_amount
+            
+            return close_prices
+        except Exception as e:
+            st.error(f"Error processing bond data for {ticker}: {e}")
+            return pd.DataFrame()
     try:
         if source == 'YFinance':
             raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
@@ -576,7 +612,7 @@ def plot_monthly_comparison_heatmap(data, title):
     return fig
 
 def main():
-    data_sources = ['YFinance', 'AnálisisTécnico.com.ar', 'IOL (Invertir Online)', 'ByMA Data']
+    data_sources = ['YFinance', 'AnálisisTécnico.com.ar', 'IOL (Invertir Online)', 'ByMA Data', 'Bonds']
 
     mode = st.radio("Selecciona el modo",
                     ["Un Ticker, Múltiples Años",
@@ -636,7 +672,13 @@ def main():
 
             ticker_source_pairs = []
             for source in selected_sources:
-                if ticker_inputs[source].strip():
+                if source == 'Bonds':
+                    if ticker_inputs[source].strip():
+                        tickers = [t.strip() for t in ticker_inputs[source].split(",")]
+                        for ticker in tickers:
+                            if ticker in bonds_list:
+                                ticker_source_pairs.append((ticker, 'YFinance'))
+                elif ticker_inputs[source].strip():
                     tickers = [t.strip() for t in ticker_inputs[source].split(",")]
                     for ticker in tickers:
                         if ticker:
