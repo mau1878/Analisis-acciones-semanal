@@ -286,7 +286,21 @@ def adjust_for_coupons(ticker, historical_data, bond_payments):
 @st.cache_data(ttl=86400)
 def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
     try:
-        if source == 'YFinance':
+        if source == 'Bonds':
+            raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
+            if raw_data.empty:
+                return pd.DataFrame()
+            
+            adjusted_data = adjust_for_coupons(ticker, raw_data, bond_data)
+            close_prices = extract_close_prices(adjusted_data)
+            
+            if close_prices.empty:
+                return pd.DataFrame()
+            
+            df = pd.DataFrame({'Close': close_prices})
+            return df
+
+        elif source == 'YFinance':
             raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
             close_prices = extract_close_prices(raw_data)
             if close_prices.empty:
@@ -609,7 +623,7 @@ def plot_monthly_comparison_heatmap(data, title):
     return fig
 
 def main():
-    data_sources = ['YFinance', 'AnálisisTécnico.com.ar', 'IOL (Invertir Online)', 'ByMA Data']
+    data_sources = ['YFinance', 'AnálisisTécnico.com.ar', 'IOL (Invertir Online)', 'ByMA Data', 'Bonds']
 
     mode = st.radio("Selecciona el modo",
                     ["Un Ticker, Múltiples Años",
