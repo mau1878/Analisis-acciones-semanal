@@ -297,22 +297,46 @@ def adjust_for_coupons(ticker, historical_data, bond_payments):
     return historical_data
 
 @st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400)
 def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
     try:
-        if source == 'Bonds':
-            raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
+        # Auto-detect if this is a bond ticker from the CSV
+        is_bond = ticker in BONDS if BONDS else False
+        
+        if is_bond:
+            # For bonds, override source to a reliable one (IOL preferred for BCBA bonds; fallback to AnálisisTécnico)
+            bond_source = 'IOL (Invertir Online)' if 'IOL' in source or source == 'YFinance' else 'AnálisisTécnico.com.ar'
+            if source == bond_source:
+                st.info(f"Detected bond {ticker}: Fetching prices from {bond_source} and applying coupon adjustments.")
+            else:
+                st.info(f"Detected bond {ticker}: Using {bond_source} (overrides {source}) for prices + coupon adjustments.")
+            
+            # Fetch raw prices from the bond-friendly source
+            if bond_source == 'IOL (Invertir Online)':
+                raw_data = descargar_datos_iol(ticker, start_date, end_date)
+            elif bond_source == 'AnálisisTécnico.com.ar':
+                raw_data = descargar_datos_analisistecnico(ticker, start_date, end_date)
+            else:
+                raw_data = pd.DataFrame()  # Fallback empty
+            
             if raw_data.empty:
+                st.warning(f"No price data found for bond {ticker} via {bond_source}. Trying YFinance as last resort.")
+                raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
+            
+            if not raw_data.empty:
+                # Apply coupon adjustments
+                adjusted_data = adjust_for_coupons(ticker, raw_data, bond_data)
+                close_prices = extract_close_prices(adjusted_data)
+                
+                if close_prices.empty:
+                    return pd.DataFrame()
+                
+                df = pd.DataFrame({'Close': close_prices})
+                return df
+            else:
                 return pd.DataFrame()
-            
-            adjusted_data = adjust_for_coupons(ticker, raw_data, bond_data)
-            close_prices = extract_close_prices(adjusted_data)
-            
-            if close_prices.empty:
-                return pd.DataFrame()
-            
-            df = pd.DataFrame({'Close': close_prices})
-            return df
 
+        # Non-bond logic (unchanged, but removed the old 'Bonds' block)
         elif source == 'YFinance':
             raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
             close_prices = extract_close_prices(raw_data)
@@ -636,7 +660,9 @@ def plot_monthly_comparison_heatmap(data, title):
     return fig
 
 def main():
-    data_sources = ['YFinance', 'AnálisisTécnico.com.ar', 'IOL (Invertir Online)', 'ByMA Data', 'Bonds']
+    data_sources = ['YFinance', 'AnálisisTécnico.com.ar', 'IOL (Invertir Online)', 'ByMA Data']  # Removed 'Bonds'
+
+    # ... rest of the function unchanged
 
     mode = st.radio("Selecciona el modo",
                     ["Un Ticker, Múltiples Años",
