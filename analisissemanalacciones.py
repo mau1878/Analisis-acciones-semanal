@@ -269,17 +269,30 @@ def adjust_for_coupons(ticker, historical_data, bond_payments):
     if historical_data.empty or bond_payments.empty:
         return historical_data
     
+    # Ensure historical_data has a 'Close' column
+    if 'Close' not in historical_data.columns:
+        st.error(f"No 'Close' column found for {ticker}")
+        return historical_data
+    
     ticker_payments = bond_payments[bond_payments['Ticker'] == ticker].sort_values('Fecha')
+    if ticker_payments.empty:
+        return historical_data
     
     adjusted_prices = historical_data['Close'].copy()
-
+    
+    # Iterate through each coupon payment in reverse to adjust prices before each payment date
     for _, payment in ticker_payments.iterrows():
         payment_date = payment['Fecha']
         coupon_amount = payment['Total']
         
-        # Apply coupon adjustment on and after the payment date
-        adjusted_prices[adjusted_prices.index >= payment_date] += coupon_amount
-        
+        # Adjust prices before the coupon payment date by subtracting the coupon amount
+        # This accounts for the ex-coupon price drop
+        adjusted_prices[adjusted_prices.index < payment_date] -= coupon_amount
+    
+    # Ensure no negative prices
+    adjusted_prices = adjusted_prices.clip(lower=0)
+    
+    # Update the historical_data DataFrame
     historical_data['Close'] = adjusted_prices
     return historical_data
 
