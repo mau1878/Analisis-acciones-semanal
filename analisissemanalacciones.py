@@ -267,6 +267,7 @@ BONDS = bond_data['Ticker'].unique().tolist() if not bond_data.empty else []
 
 def adjust_for_coupons(ticker, historical_data, bond_payments):
     if historical_data.empty or bond_payments.empty:
+        st.warning(f"No data or bond payments for {ticker}. Skipping coupon adjustments.")
         return historical_data
     
     # Ensure historical_data has a 'Close' column
@@ -276,27 +277,37 @@ def adjust_for_coupons(ticker, historical_data, bond_payments):
     
     ticker_payments = bond_payments[bond_payments['Ticker'] == ticker].sort_values('Fecha')
     if ticker_payments.empty:
+        st.warning(f"No coupon payments found for {ticker} in bond_data.csv")
         return historical_data
     
     adjusted_prices = historical_data['Close'].copy()
     
-    # Iterate through each coupon payment in reverse to adjust prices before each payment date
+    # Iterate through each coupon payment in reverse chronological order
     for _, payment in ticker_payments.iterrows():
         payment_date = payment['Fecha']
         coupon_amount = payment['Total']
         
-        # Adjust prices before the coupon payment date by subtracting the coupon amount
-        # This accounts for the ex-coupon price drop
-        adjusted_prices[adjusted_prices.index < payment_date] -= coupon_amount
+        # Only adjust if payment date is within the historical data range
+        if payment_date >= historical_data.index.min() and payment_date <= historical_data.index.max():
+            # Subtract coupon amount from prices before the payment date
+            mask = adjusted_prices.index < payment_date
+            if mask.any():
+                adjusted_prices[mask] -= coupon_amount
+                # Check if adjustment causes negative or zero prices
+                if (adjusted_prices[mask] <= 0).any():
+                    st.warning(f"Coupon adjustment for {ticker} on {payment_date.date()} (amount: {coupon_amount}) results in non-positive prices. Skipping this adjustment.")
+                    adjusted_prices[mask] += coupon_amount  # Revert adjustment
     
-    # Ensure no negative prices
-    adjusted_prices = adjusted_prices.clip(lower=0)
+    # Ensure no negative or zero prices in the final series
+    if (adjusted_prices <= 0).any():
+        st.warning(f"Coupon adjustments for {ticker} result in non-positive prices. Returning unadjusted data.")
+        return historical_data
     
     # Update the historical_data DataFrame
     historical_data['Close'] = adjusted_prices
+    st.info(f"Applied coupon adjustments for {ticker}. Adjusted price range: {adjusted_prices.min():.2f} to {adjusted_prices.max():.2f}")
     return historical_data
 
-@st.cache_data(ttl=86400)
 @st.cache_data(ttl=86400)
 def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
     try:
@@ -304,52 +315,55 @@ def fetch_stock_data(ticker, start_date, end_date, source='YFinance'):
         is_bond = ticker in BONDS if BONDS else False
         
         if is_bond:
-            # For bonds, override source to a reliable one (IOL preferred for BCBA bonds; fallback to AnálisisTécnico)
-            bond_source = 'IOL (Invertir Online)' if 'IOL' in source or source == 'YFinance' else 'AnálisisTécnico.com.ar'
-            if source == bond_source:
-                st.info(f"Detected bond {ticker}: Fetching prices from {bond_source} and applying coupon adjustments.")
-            else:
-                st.info(f"Detected bond {ticker}: Using {bond_source} (overrides {source}) for prices + coupon adjustments.")
+            st.info(f"Detected bond {ticker}: Attempting to fetch prices from IOL (Invertir Online), then AnálisisTécnico.com.ar.")
             
-            # Fetch raw prices from the bond-friendly source
-            if bond_source == 'IOL (Invertir Online)':
-                raw_data = descargar_datos_iol(ticker, start_date, end_date)
-            elif bond_source == 'AnálisisTécnico.com.ar':
+            # Try IOL first (preferred for BCBA bonds)
+            raw_data = descargar_datos_iol(ticker, start_date, end_date)
+            if raw_data.empty:
+                st.warning(f"No data from IOL for {ticker}. Trying AnálisisTécnico.com.ar.")
                 raw_data = descargar_datos_analisistecnico(ticker, start_date, end_date)
-            else:
-                raw_data = pd.DataFrame()  # Fallback empty
             
             if raw_data.empty:
-                st.warning(f"No price data found for bond {ticker} via {bond_source}. Trying YFinance as last resort.")
-                raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
-            
-            if not raw_data.empty:
-                # Apply coupon adjustments
-                adjusted_data = adjust_for_coupons(ticker, raw_data, bond_data)
-                close_prices = extract_close_prices(adjusted_data)
-                
-                if close_prices.empty:
-                    return pd.DataFrame()
-                
-                df = pd.DataFrame({'Close': close_prices})
-                return df
-            else:
+                st.error(f"Failed to fetch price data for bond {ticker} from both IOL and AnálisisTécnico.")
                 return pd.DataFrame()
+            
+            # Apply coupon adjustments
+            adjusted_data = adjust_for_coupons(ticker, raw_data, bond_data)
+            close_prices = extract_close_prices(adjusted_data)
+            
+            if close_prices.empty:
+                st.error(f"No valid close prices after processing for {ticker}")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame({'Close': close_prices})
+            st.info(f"Successfully fetched and processed data for {ticker}. Data points: {len(df)}")
+            return df
 
-        # Non-bond logic (unchanged, but removed the old 'Bonds' block)
+        # Non-bond logic
         elif source == 'YFinance':
             raw_data = descargar_datos_yfinance(ticker, start_date, end_date)
             close_prices = extract_close_prices(raw_data)
             if close_prices.empty:
+                st.error(f"No valid close prices from YFinance for {ticker}")
                 return pd.DataFrame()
             df = pd.DataFrame({'Close': close_prices})
+            st.info(f"Fetched {len(df)} data points from YFinance for {ticker}")
             return df
         elif source == 'AnálisisTécnico.com.ar':
-            return descargar_datos_analisistecnico(ticker, start_date, end_date)
+            raw_data = descargar_datos_analisistecnico(ticker, start_date, end_date)
+            if raw_data.empty:
+                st.error(f"No data from AnálisisTécnico for {ticker}")
+            return raw_data
         elif source == 'IOL (Invertir Online)':
-            return descargar_datos_iol(ticker, start_date, end_date)
+            raw_data = descargar_datos_iol(ticker, start_date, end_date)
+            if raw_data.empty:
+                st.error(f"No data from IOL for {ticker}")
+            return raw_data
         elif source == 'ByMA Data':
-            return descargar_datos_byma(ticker, start_date, end_date)
+            raw_data = descargar_datos_byma(ticker, start_date, end_date)
+            if raw_data.empty:
+                st.error(f"No data from ByMA Data for {ticker}")
+            return raw_data
         else:
             st.error(f"Unknown data source: {source}")
             return pd.DataFrame()
