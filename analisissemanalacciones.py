@@ -637,7 +637,7 @@ def plot_monthly_comparison_heatmap(data, title):
     custom_cmap = sns.diverging_palette(h_neg=10, h_pos=130, s=99, l=55, sep=3, as_cmap=True)
     max_abs_val = max(abs(data.min().min()), abs(data.max().max()))
 
-    base_size = 8
+    base_size = 10
     reference_cells = 12 * 5
     num_cells = data.shape[0] * data.shape[1]
     font_size = base_size * math.sqrt(reference_cells / max(num_cells, 1))
